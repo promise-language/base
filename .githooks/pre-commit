@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Git pre-commit trampoline.
+#
+# Once this repo has its own dev tooling, bin/precommit is the commit gate and
+# this hook execs it. Until then the hook still enforces the one rule that
+# matters from day one: commits must carry the maintainer's GitHub noreply
+# identity, which is what the server-side ruleset also enforces.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [ -x "$root/bin/precommit" ]; then
+    exec "$root/bin/precommit"
+fi
+
+# Read the identity git is about to use, so this catches user.email config and
+# GIT_*_EMAIL environment overrides alike.
+author_email="$(git var GIT_AUTHOR_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')"
+committer_email="$(git var GIT_COMMITTER_IDENT | sed -n 's/.*<\(.*\)>.*/\1/p')"
+
+for pair in "author:$author_email" "committer:$committer_email"; do
+    role="${pair%%:*}"
+    email="${pair#*:}"
+    case "$email" in
+        *@users.noreply.github.com) ;;
+        *)
+            echo "pre-commit: $role email '$email' is not a @users.noreply.github.com address" >&2
+            echo "pre-commit: set it with 'git config user.email <id>+<user>@users.noreply.github.com'" >&2
+            exit 1
+            ;;
+    esac
+done

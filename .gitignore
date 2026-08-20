@@ -1,0 +1,12 @@
+# bin/ holds locally-built dev tools, never committed
+bin/
+
+# Promise build output and local home
+.promise-build/
+.promise-home/
+
+# env file
+.env
+
+# OS / editor
+**/.DS_Store

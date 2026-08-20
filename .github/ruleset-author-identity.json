@@ -1,0 +1,31 @@
+{
+  "name": "enforce-author-identity",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["~ALL"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    {
+      "type": "commit_author_email_pattern",
+      "parameters": {
+        "name": "author must be the repo owner's GitHub noreply",
+        "negate": false,
+        "operator": "regex",
+        "pattern": "^11466501\\+djabi@users\\.noreply\\.github\\.com$"
+      }
+    },
+    {
+      "type": "committer_email_pattern",
+      "parameters": {
+        "name": "committer must be the repo owner's GitHub noreply",
+        "negate": false,
+        "operator": "regex",
+        "pattern": "^11466501\\+djabi@users\\.noreply\\.github\\.com$"
+      }
+    }
+  ]
+}
