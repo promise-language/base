@@ -22,6 +22,7 @@ and each is versioned here so that both sides of the boundary agree on it:
 | **Gate output envelope** | a gate and Reactor | one gate run's result, as JSON on stdout |
 | **Flow self-description** | a flow and Reactor | item types, eligibility, exclusions, session and arena hints |
 | **Authority config** | a companion repo and Reactor | roles, step grants, the capability vocabulary, read scope |
+| **Arena context** | the runner and the workspace setup tool | the arena's purpose, its paths, and the inputs worktree materialization needs, read over loopback |
 
 Two of those are deliberately **language-neutral**. The gate manifest and the output envelope
 are a JSON contract over a subprocess rather than an SDK interface, so a project satisfies
@@ -53,6 +54,18 @@ constrains.
 
 Keeping that boundary firm is what makes this a reusable layer rather than a place where a
 directory per orchestrated project accumulates.
+
+**Reactor's persistence layer is also not here**, and its absence is a decision rather than an
+omission. Nothing outside the Reactor server ever speaks to a store — flows reach items through
+the Flow API and gates emit an envelope — so both ends of that interface live in one address
+space. It also keeps the two representations of an item apart: a flow sees the wire type
+published here, while the server stores whatever shape suits it. Unify them and changing storage
+becomes a breaking change for every flow.
+
+The same test decides the rest. **A contract belongs here when its two ends are built by
+different owners.** A contract whose ends share an owner stays with that owner, even when the two
+sides deploy separately and therefore still need versioning — the runner and the Reactor server
+being the case in point.
 
 ## Design
 
