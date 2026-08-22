@@ -1,0 +1,170 @@
+// Identity types for the contracts BASE publishes.
+//
+// Only identities that cross an owner boundary live here — the ones a flow or a
+// gate names. A lease holder and an arena id are Reactor's and its runner's, one
+// owner on both ends, so they stay there.
+
+type IdentityError is error `public `doc("A reference that cannot be accepted as an identity.") {
+}
+
+type ProjectId `public `doc("A project's identity: the canonical URL of its repository. The host selects the identity adapter, and canonicalization is that adapter's job, so this type holds an already-canonical value.") {
+  string _url `final;
+
+  of(string move canonical_url) Self `factory `public `doc("Wraps a URL the adapter has already canonicalized. Callers holding an unvalidated string use parse instead.") {
+    return ProjectId(_url: move canonical_url);
+  }
+
+  parse!(string move url) Self `factory `public `doc("Applies the floor every adapter must satisfy: the reference is an absolute URL with a scheme and a host, and carries no embedded password. Host-specific canonicalization — whether an ssh and an https form name one repository, whether a trailing .git matters — is the adapter's and is not attempted here.") {
+    if url.contains(" ") || url.contains("\t") {
+      raise IdentityError(message: "project reference contains whitespace: " + url);
+    }
+    string[] halves = url.split("://");
+    if halves.len != 2 {
+      raise IdentityError(message: "project reference is not an absolute URL: " + url);
+    }
+    if halves[0].is_empty {
+      raise IdentityError(message: "project reference has no scheme: " + url);
+    }
+    if halves[1].is_empty {
+      raise IdentityError(message: "project reference has no host: " + url);
+    }
+    // Bound to a name rather than chained: two nested temporary arrays indexed in
+    // one expression is promise-language/promise#39 (heap corruption). Clearer this
+    // way regardless, but do not fold it back into a chain.
+    string[] host_and_path = halves[1].split("/");
+    string authority = host_and_path[0];
+    if authority.is_empty {
+      raise IdentityError(message: "project reference has no host: " + url);
+    }
+    if authority.contains("@") {
+      string[] user_and_host = authority.split("@");
+      if user_and_host[0].contains(":") {
+        raise IdentityError(message: "project reference carries an embedded password: " + url);
+      }
+      if user_and_host[user_and_host.len - 1].is_empty {
+        raise IdentityError(message: "project reference has no host: " + url);
+      }
+    }
+    return ProjectId(_url: move url);
+  }
+
+  get url string `public `doc("The canonical repository URL.") => this._url;
+
+  to_string(this) string `public `doc("The canonical repository URL, unchanged.") => this._url;
+
+  clone(this) ProjectId `public `doc("An independent copy. Allocates, so it is a method rather than a getter.") => ProjectId(_url: this._url);
+
+  == (ProjectId other) bool `public `doc("Two projects are the same when their canonical URLs are.") => this._url == other._url;
+}
+
+type ItemId `public `doc("An item's identity: its project, plus the id its item authority gave it. Written as the project URL, a hash, and the local id.") {
+  ProjectId _project `final;
+  string _local `final;
+
+  of(ProjectId move project, string move local) Self `factory `public `doc("Builds an item id from a project and the local id its authority assigned.") {
+    return ItemId(_project: move project, _local: move local);
+  }
+
+  get project ProjectId `public `doc("The project owning this item.") => this._project.clone();
+
+  parse!(string move reference) Self `factory `public `doc("Reads the reference form back: a project URL, a hash, and the local id. The project half goes through the same floor as ProjectId.parse.") {
+    string[] halves = reference.split("#");
+    if halves.len != 2 {
+      raise IdentityError(message: "item reference is not <project>#<id>: " + reference);
+    }
+    if halves[1].is_empty {
+      raise IdentityError(message: "item reference has no local id: " + reference);
+    }
+    return ItemId(_project: ProjectId.parse(halves[0]), _local: halves[1]);
+  }
+
+  get local string `public `doc("The id this item's authority assigned, unique within its project.") => this._local;
+
+  clone(this) ItemId `public `doc("An independent copy.") => ItemId(_project: this._project.clone(), _local: this._local);
+
+  to_string(this) string `public `doc("The reference form: the project URL, a hash, and the local id.") {
+    return this._project.url + "#" + this._local;
+  }
+
+  == (ItemId other) bool `public `doc("Two item ids match when both project and local id do.") {
+    return this._project == other._project && this._local == other._local;
+  }
+}
+
+type StepName `public `doc("A step's name, as the flow's describe output declares it. Unique within one flow, and the name a step grant refers to.") {
+  string _name `final;
+
+  of(string move name) Self `factory `public `doc("Wraps a declared step name.") {
+    return StepName(_name: move name);
+  }
+
+  parse!(string move name) Self `factory `public `doc("Rejects a name that cannot identify a step.") {
+    if name.is_empty {
+      raise IdentityError(message: "step name is empty");
+    }
+    return StepName(_name: move name);
+  }
+
+  get name string `public `doc("The declared name.") => this._name;
+
+  to_string(this) string `public `doc("The declared name, unchanged.") => this._name;
+
+  clone(this) StepName `public `doc("An independent copy.") => StepName(_name: this._name);
+
+  == (StepName other) bool `public `doc("Two step names match when their text does.") => this._name == other._name;
+}
+
+type StepRunId `public `doc("One dispatch of one step: the grain at which a grant is given, cost is attributed, and an artifact or checkpoint is owned. Minted by Reactor — a flow receives one and never constructs its own.") {
+  string _value `final;
+
+  of(string move value) Self `factory `public `doc("Reads a minted id off the wire. Nothing outside Reactor mints one.") {
+    return StepRunId(_value: move value);
+  }
+
+  get value string `public `doc("The opaque minted value.") => this._value;
+
+  to_string(this) string `public `doc("The opaque minted value, unchanged.") => this._value;
+
+  clone(this) StepRunId `public `doc("An independent copy.") => StepRunId(_value: this._value);
+
+  == (StepRunId other) bool `public `doc("Minted ids match exactly or not at all.") => this._value == other._value;
+}
+
+type QuestionId `public `doc("A question raised against an item. Minted by Reactor when the question is recorded, and referenced by the answer that resolves it.") {
+  string _value `final;
+
+  of(string move value) Self `factory `public `doc("Reads a minted id off the wire.") {
+    return QuestionId(_value: move value);
+  }
+
+  get value string `public `doc("The opaque minted value.") => this._value;
+
+  to_string(this) string `public `doc("The opaque minted value, unchanged.") => this._value;
+
+  clone(this) QuestionId `public `doc("An independent copy.") => QuestionId(_value: this._value);
+
+  == (QuestionId other) bool `public `doc("Minted ids match exactly or not at all.") => this._value == other._value;
+}
+
+type ArticleKey `public `doc("A feed article's durable identity, chosen by whoever posts it and namespaced by them. For an article projecting a standing condition the key is a pure function of that condition, so two posts about one condition collide rather than accumulating.") {
+  string _key `final;
+
+  of(string move key) Self `factory `public `doc("Wraps a creator-namespaced key.") {
+    return ArticleKey(_key: move key);
+  }
+
+  parse!(string move key) Self `factory `public `doc("Rejects a key that cannot identify an article.") {
+    if key.is_empty {
+      raise IdentityError(message: "article key is empty");
+    }
+    return ArticleKey(_key: move key);
+  }
+
+  get key string `public `doc("The namespaced key.") => this._key;
+
+  to_string(this) string `public `doc("The namespaced key, unchanged.") => this._key;
+
+  clone(this) ArticleKey `public `doc("An independent copy.") => ArticleKey(_key: this._key);
+
+  == (ArticleKey other) bool `public `doc("Two article keys match when their text does.") => this._key == other._key;
+}

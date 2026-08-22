@@ -1,0 +1,113 @@
+project_accepts_canonical() `test {
+  ProjectId p = ProjectId.parse("https://github.com/promise-language/reactor")?!;
+  assert(p.url == "https://github.com/promise-language/reactor", msg: "url survives parse");
+}
+
+project_rejects_relative() `test {
+  bool raised = false;
+  ProjectId p = ProjectId.parse("promise-language/reactor") ? e {
+    raised = true;
+    ProjectId.of("");
+  };
+  assert(raised, msg: "a relative reference is refused");
+}
+
+project_rejects_credentials() `test {
+  bool raised = false;
+  ProjectId p = ProjectId.parse("https://user:pw@example.org/x") ? e {
+    raised = true;
+    ProjectId.of("");
+  };
+  assert(raised, msg: "embedded credentials are refused");
+}
+
+project_equality_is_by_url() `test {
+  ProjectId a = ProjectId.of("https://example.org/a");
+  ProjectId b = ProjectId.of("https://example.org/a");
+  ProjectId c = ProjectId.of("https://example.org/b");
+  assert(a == b, msg: "same url is the same project");
+  assert(!(a == c), msg: "different url is a different project");
+}
+
+item_renders_reference_form() `test {
+  ItemId i = ItemId.of(ProjectId.of("https://github.com/promise-language/reactor"), "481");
+  assert(i.to_string() == "https://github.com/promise-language/reactor#481", msg: "reference form");
+  assert(i.local == "481", msg: "local id is preserved");
+}
+
+step_name_rejects_empty() `test {
+  bool raised = false;
+  StepName s = StepName.parse("") ? e {
+    raised = true;
+    StepName.of("x");
+  };
+  assert(raised, msg: "an empty step name is refused");
+}
+
+minted_ids_compare_exactly() `test {
+  StepRunId a = StepRunId.of("r-1");
+  StepRunId b = StepRunId.of("r-1");
+  StepRunId c = StepRunId.of("r-2");
+  assert(a == b, msg: "same minted value is the same run");
+  assert(!(a == c), msg: "different minted value is a different run");
+}
+
+question_and_article_round_trip() `test {
+  QuestionId q = QuestionId.of("q-7");
+  assert(q.to_string() == "q-7", msg: "question id round-trips");
+  ArticleKey k = ArticleKey.parse("gate:build-time")?!;
+  assert(k.key == "gate:build-time", msg: "article key round-trips");
+}
+
+floor_accepts_an_ssh_url_with_a_username() `test {
+  ProjectId p = ProjectId.parse("ssh://git@github.com/promise-language/reactor")?!;
+  assert(p.url.contains("git@"), msg: "a username is not a credential and is kept");
+}
+
+floor_rejects_only_an_embedded_password() `test {
+  bool right_reason = false;
+  ProjectId p = ProjectId.parse("https://user:pw@example.org/x") ? e {
+    right_reason = e.message.contains("password");
+    ProjectId.of("");
+  };
+  assert(right_reason, msg: "rejected for the password, not for something else");
+}
+
+floor_rejects_junk_containing_a_scheme_separator() `test {
+  bool right_reason = false;
+  ProjectId p = ProjectId.parse("not a url but has :// inside") ? e {
+    right_reason = e.message.contains("whitespace");
+    ProjectId.of("");
+  };
+  assert(right_reason, msg: "junk is refused, and for a stated reason");
+}
+
+floor_rejects_a_bare_scheme_separator() `test {
+  bool right_reason = false;
+  ProjectId p = ProjectId.parse("://") ? e {
+    right_reason = e.message.contains("scheme");
+    ProjectId.of("");
+  };
+  assert(right_reason, msg: "a reference with no scheme is refused");
+}
+
+floor_rejects_a_relative_reference_for_the_stated_reason() `test {
+  bool right_reason = false;
+  ProjectId p = ProjectId.parse("promise-language/reactor") ? e {
+    right_reason = e.message.contains("absolute");
+    ProjectId.of("");
+  };
+  assert(right_reason, msg: "rejected for not being absolute");
+}
+
+item_reference_round_trips() `test {
+  ItemId i = ItemId.parse("https://github.com/promise-language/reactor#481")?!;
+  assert(i.local == "481", msg: "local id read back");
+  assert(i.to_string() == "https://github.com/promise-language/reactor#481", msg: "round-trips");
+}
+
+item_clone_is_independent() `test {
+  ItemId a = ItemId.of(ProjectId.of("https://example.org/a"), "1");
+  ItemId b = a.clone();
+  assert(b == a, msg: "a clone equals its original");
+}

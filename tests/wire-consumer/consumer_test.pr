@@ -1,0 +1,36 @@
+item_reference_round_trips_across_the_module_boundary() `test {
+  wire.ProjectId p = wire.ProjectId.parse("https://github.com/promise-language/reactor")?!;
+  wire.ItemId i = wire.ItemId.of(move p, "481");
+  assert(i.to_string() == "https://github.com/promise-language/reactor#481",
+         msg: "an item renders its reference form for an external consumer");
+  assert(i.local == "481", msg: "the local id survives the boundary");
+}
+
+floor_validation_is_enforced_for_consumers() `test {
+  bool raised = false;
+  wire.ProjectId p = wire.ProjectId.parse("https://user:pw@example.org/x") ? e {
+    raised = true;
+    wire.ProjectId.of("");
+  };
+  assert(raised, msg: "the credential floor applies to callers outside the module");
+}
+
+minted_ids_are_usable_from_outside() `test {
+  wire.StepRunId r = wire.StepRunId.of("r-1");
+  wire.QuestionId q = wire.QuestionId.of("q-7");
+  wire.ArticleKey k = wire.ArticleKey.parse("gate:build-time")?!;
+  assert(r.to_string() == "r-1", msg: "step run id");
+  assert(q.to_string() == "q-7", msg: "question id");
+  assert(k.key == "gate:build-time", msg: "article key");
+}
+
+step_names_are_usable_from_outside() `test {
+  wire.StepName s = wire.StepName.parse("implement")?!;
+  assert(s.name == "implement", msg: "a declared step name crosses the boundary");
+  bool right_reason = false;
+  wire.StepName bad = wire.StepName.parse("") ? e {
+    right_reason = e.message.contains("empty");
+    wire.StepName.of("x");
+  };
+  assert(right_reason, msg: "an empty step name is refused, for the stated reason");
+}

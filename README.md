@@ -1,8 +1,8 @@
 # base — the shared layer of Bounded-Autonomy Software Engineering
 
-> **Status: scaffolding.** The repo exists; the contracts it will hold are still being
-> specified in the [Reactor design docs](https://github.com/promise-language/reactor/tree/main/docs).
-> There is no implementation here yet.
+> **Status: scaffolding.** The contracts are specified in the
+> [Reactor design docs](https://github.com/promise-language/reactor/tree/main/docs) and are being
+> written here as they settle. `wire/` holds the identity types; the rest is still specification.
 
 **BASE** — Bounded-Autonomy Software Engineering — is a way of building software in which
 agents resolve work items unattended, bounded by what they are *able* to do rather than by
@@ -17,7 +17,9 @@ and each is versioned here so that both sides of the boundary agree on it:
 
 | Contract | Spoken between | Carries |
 |---|---|---|
-| **Wire types** | a flow and Reactor | claim and release, load state, resolve artifact, worktree coordination |
+| **Identity types** | everyone | the references that cross an owner boundary — a project, an item, a step, a step run, a question, an article |
+| **Wire types** | a flow and Reactor | every operation a flow performs, [proxied by its runner](https://github.com/promise-language/reactor/blob/main/docs/base-engineering.md#the-flow-contract) — item reads and annotations, artifact and checkpoint writes, holds, agent runs, gate runs, and proxied VCS |
+| **Feed article** | any component and Reactor | one call on human attention, with its calls to action |
 | **Gate manifest** | a project and Reactor | which gates exist, what each blocks, what each measures |
 | **Gate output envelope** | a gate and Reactor | one gate run's result, as JSON on stdout |
 | **Flow self-description** | a flow and Reactor | item types, eligibility, exclusions, session and arena hints |

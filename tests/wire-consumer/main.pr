@@ -1,0 +1,7 @@
+use wire "../../wire";
+
+main() `test(expected: "https://github.com/promise-language/reactor#481\n") {
+  wire.ProjectId p = wire.ProjectId.parse("https://github.com/promise-language/reactor")?!;
+  wire.ItemId i = wire.ItemId.of(move p, "481");
+  print_line(i.to_string());
+}
