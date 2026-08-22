@@ -1,0 +1,63 @@
+_metrics() map[string, MetricValue] {
+  map[string, MetricValue] m = map[string, MetricValue]();
+  m["test_count"] = MetricValue.Int(17703);
+  m["test_failures"] = MetricValue.Int(0);
+  return m;
+}
+
+envelope_encodes_as_one_object() `test {
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  string s = json.encode_string(out)?!;
+  assert(s.contains("\"schema_version\":1"), msg: "carries its wire version");
+  assert(s.contains("\"target\":\"linux/amd64\""), msg: "carries the target it speaks for");
+  assert(s.contains("\"complete\":true"), msg: "carries the completion marker");
+}
+
+integer_metrics_stay_integers() `test {
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  string s = json.encode_string(out)?!;
+  assert(s.contains("\"test_count\":17703"), msg: "a count is not encoded as a float");
+  assert(!s.contains("17703.0"), msg: "no float widening of an exact count");
+}
+
+float_metrics_stay_floats() `test {
+  map[string, MetricValue] m = map[string, MetricValue]();
+  m["build_seconds"] = MetricValue.Float(50.4);
+  GateOutput out = GateOutput.of("darwin/arm64", move m);
+  string s = json.encode_string(out)?!;
+  assert(s.contains("50.4"), msg: "a measured duration keeps its fraction");
+}
+
+groups_carry_per_part_measurements() `test {
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  map[string, MetricValue] g = map[string, MetricValue]();
+  g["test_count"] = MetricValue.Int(164);
+  out.with_group(MetricGroup.of("modules/json", move g));
+  string s = json.encode_string(out)?!;
+  assert(s.contains("\"modules/json\""), msg: "the group is named");
+  assert(s.contains("164"), msg: "the group's own measurement is carried");
+}
+
+an_envelope_reports_no_verdict() `test {
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  string s = json.encode_string(out)?!;
+  assert(!s.contains("\"status\""), msg: "no self-reported status");
+  assert(!s.contains("\"verdict\""), msg: "no self-reported verdict");
+  assert(!s.contains("\"passed\""), msg: "Reactor decides against caps and baselines, not the gate");
+}
+
+a_partial_run_says_so_and_says_why() `test {
+  map[string, MetricValue] m = map[string, MetricValue]();
+  m["test_count"] = MetricValue.Int(3000);
+  GateOutput out = GateOutput.partial("linux/amd64", move m, "wasm suite skipped: no wasmtime on this host");
+  assert(!out.complete, msg: "an incomplete run is marked");
+  assert(out.incomplete_reason.contains("wasmtime"), msg: "and says why, in the envelope");
+  string s = json.encode_string(out)?!;
+  assert(s.contains("\"complete\":false"), msg: "the marker crosses the wire");
+}
+
+a_complete_run_carries_no_reason() `test {
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  assert(out.complete, msg: "a full run is complete");
+  assert(out.incomplete_reason.is_empty, msg: "and has nothing to explain");
+}

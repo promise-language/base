@@ -1,0 +1,116 @@
+// The gate output envelope: what one gate run reports to Reactor.
+//
+// A gate reports what it measured and whether those measurements cover everything
+// it normally measures. It does not report a verdict — Reactor decides pass or
+// fail by checking these metrics against the caps and baselines the project
+// declared, because a subprocess that judges its own output is the one thing the
+// artifact rule exists to prevent.
+//
+// There is no marker for "the envelope is whole". A gate killed mid-write emits
+// malformed JSON, which already fails to parse, so a completeness flag meaning
+// that would say nothing the parser does not.
+
+use json;
+
+type GateError is error `public `doc("A gate envelope that cannot be accepted.") {
+}
+
+enum MetricValue `public `doc("One measurement. Integers stay integers: a test count encoded as a float is a count nobody can compare exactly.") {
+  Int(int value),
+  Float(f64 value),
+
+  encode!(Encoder ~e) `public `doc("Writes the measurement in its own type.") {
+    match this {
+      Int(v) => e.encode_int(v),
+      Float(v) => e.encode_f64(v),
+    }
+  }
+
+  to_string(this) string `public `doc("The measurement as text, in its own type.") => match this {
+    Int(v) => v.to_string(),
+    Float(v) => v.to_string(),
+  };
+}
+
+type MetricGroup `public `doc("Measurements for one part of a run — a package, a file, a suite. A total says a ratchet moved; a group says where, which is the difference between a bisect and a glance.") {
+  string _name `final;
+  map[string, MetricValue] _metrics `final;
+
+  of(string move name, map[string, MetricValue] move metrics) Self `factory `public `doc("Builds a named group of measurements.") {
+    return MetricGroup(_name: move name, _metrics: move metrics);
+  }
+
+  get name string `public `doc("What this group measures.") => this._name;
+
+  get metrics map[string, MetricValue] `public `doc("The measurements, keyed by the names the manifest declared.") => this._metrics.clone();
+}
+
+type GateOutput `public `doc("One gate run's result. Written as a single JSON object on stdout; human-readable progress belongs on stderr, which Reactor never parses.") {
+  int _schema_version `final;
+  string _target `final;
+  map[string, MetricValue] _metrics `final;
+  MetricGroup[] _groups `final;
+  bool _complete `final;
+  string _incomplete_reason `final;
+
+  of(string move target, map[string, MetricValue] move metrics) Self `factory `public `doc("A run that measured everything it normally measures, for one target. One gate run reports one target — that is invariant, not a convenience.") {
+    return GateOutput(_schema_version: 1, _target: move target, _metrics: move metrics,
+                      _groups: MetricGroup[](), _complete: true, _incomplete_reason: "");
+  }
+
+  partial(string move target, map[string, MetricValue] move metrics, string move reason) Self `factory `public `doc("A run that could not measure everything — a suite skipped for a missing tool, a subset deliberately selected. The reason is carried because a human decides what to do about it.") {
+    return GateOutput(_schema_version: 1, _target: move target, _metrics: move metrics,
+                      _groups: MetricGroup[](), _complete: false, _incomplete_reason: move reason);
+  }
+
+  get schema_version int `public `doc("Wire version. Reactor refuses unknown majors.") => this._schema_version;
+
+  get target string `public `doc("Which declared target this run's verdict speaks for.") => this._target;
+
+  get complete bool `public `doc("Whether these measurements cover everything this gate normally measures. A run that skipped a suite reports honest numbers that understate the tree, which is indistinguishable from a regression unless the gate says so. **Reactor must not move a baseline from an incomplete run** — ratcheting on one would lower the floor for a reason that is not about the code.") => this._complete;
+
+  get incomplete_reason string `public `doc("Why the run measured less than usual; empty when it did not. Carried in the envelope rather than left on stderr, which nothing parses.") => this._incomplete_reason;
+
+  metrics(this) map[string, MetricValue] `public `doc("The measurements, keyed by the names the manifest declared. Allocates.") => this._metrics.clone();
+
+  groups(this) MetricGroup[] `public `doc("Per-part measurements, empty when the gate reports only a total. Allocates.") => this._groups.clone();
+
+  with_group(~this, MetricGroup move group) `public `doc("Adds one group of per-part measurements.") {
+    this._groups.push(move group);
+  }
+
+  encode!(Encoder ~e) `public `doc("Writes the envelope as one JSON object.") {
+    e.begin_object(6);
+    e.encode_key("schema_version");
+    e.encode_int(this._schema_version);
+    e.encode_key("target");
+    e.encode_string(this._target);
+    e.encode_key("metrics");
+    _encode_metrics(e, this._metrics);
+    e.encode_key("groups");
+    e.begin_array(this._groups.len);
+    for g in this._groups {
+      e.begin_object(2);
+      e.encode_key("name");
+      e.encode_string(g.name);
+      e.encode_key("metrics");
+      _encode_metrics(e, g.metrics);
+      e.end_object();
+    }
+    e.end_array();
+    e.encode_key("complete");
+    e.encode_bool(this._complete);
+    e.encode_key("incomplete_reason");
+    e.encode_string(this._incomplete_reason);
+    e.end_object();
+  }
+}
+
+_encode_metrics!(Encoder ~e, map[string, MetricValue] metrics) {
+  e.begin_object(metrics.len);
+  for k, v in metrics {
+    e.encode_key(k);
+    v.encode(e);
+  }
+  e.end_object();
+}
