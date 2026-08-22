@@ -69,6 +69,14 @@ different owners.** A contract whose ends share an owner stays with that owner, 
 sides deploy separately and therefore still need versioning — the runner and the Reactor server
 being the case in point.
 
+## Engineering guide
+
+[docs/engineering-guide.md](docs/engineering-guide.md) is how Promise code under BASE is written —
+naming, shape, testing, visibility, and what to do when the platform is in the way. It is **the
+source other BASE repositories vendor from**: they hold a copy, because a rule kept in another repo
+is not in an agent's context at the moment it has to be followed, and when a copy disagrees with
+this one, this one is right.
+
 ## Design
 
 The architecture is specified in the Reactor repo:
