@@ -47,7 +47,7 @@ type OsCommand `public `clone `doc("An exec line, optionally dispatched per host
   get is_empty bool `public `doc("Whether no command was declared at all — how an absent optional command reads.") => this._default.is_empty && this._overrides.len == 0;
 }
 
-enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` on the wire; `kind` here, because `type` is a keyword. Declared so Reactor can compare exactly rather than guess from the value it happens to receive.") {
+enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` on the wire; `kind` here, because `type` is a keyword. Declared rather than inferred, and declared even though an envelope states the type of every measurement it carries: the two are a claim and its check, so a run reporting a float where this says int is a mismatch to name rather than a widening to absorb.") {
   Int,
   Float,
 }
@@ -87,7 +87,7 @@ type MetricSpec `public `clone `doc("One metric a gate emits, and the terms it i
   }
 
   get name string `public `doc("The key this metric appears under in a gate's envelope.") => this._name;
-  get kind MetricType `public `doc("What this metric measures in.") => this._kind;
+  get kind MetricType `public `doc("What this metric measures in. Changing it mid-history is a discontinuity rather than a conversion — the old values measured something else — which is why a changed kind is [flagged for admin review at manifest refresh](https://github.com/promise-language/reactor/blob/main/docs/base-engineering.md#discovery-lifecycle) rather than compared across. Absorbed silently it would move a ratchet that by construction never moves back, leaving a floor no later run could tell was wrong.") => this._kind;
   get direction Direction `public `doc("Which way is better.") => this._direction;
   get mode MetricMode `public `doc("Whether this metric binds a transition.") => this._mode;
   get has_cap bool `public `doc("Whether an absolute bound was declared.") => this._has_cap;
