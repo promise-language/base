@@ -1,0 +1,201 @@
+_gate(string move name, VcsTransition[] move blocks, Schedule? move schedule,
+      Exclusion[] move exclusions, Target? move target) GateSpec {
+  HostOs[] os = HostOs[]();
+  os.push(HostOs.Linux);
+  return GateSpec.of(move name, OsCommand.of("bin/gate test"), none,
+                     move os, move target, HostArch[](), Duration.from_secs(1800), move blocks, move schedule,
+                     move exclusions, string[](), MetricSpec[]());
+}
+
+_blocks_push() VcsTransition[] {
+  VcsTransition[] b = VcsTransition[]();
+  b.push(VcsTransition.PushOrigin);
+  return b;
+}
+
+_targets() Target[] {
+  Target[] t = Target[]();
+  t.push(Target.parse("linux/amd64")?!);
+  return t;
+}
+
+_project() wire.ProjectId {
+  return wire.ProjectId.of("https://github.com/promise-language/promise");
+}
+
+os_dispatch_prefers_the_named_override() `test {
+  OsOverride[] o = OsOverride[]();
+  o.push(OsOverride.of(HostOs.Windows, "bin\\gate.exe test"));
+  OsCommand c = OsCommand.dispatched("bin/gate test", move o);
+  assert(c.for_os(HostOs.Windows) == "bin\\gate.exe test", msg: "the override wins on its own OS");
+  assert(c.for_os(HostOs.Linux) == "bin/gate test", msg: "the default covers every other OS");
+}
+
+host_os_refuses_a_spelling_outside_the_set() `test {
+  bool right_reason = false;
+  HostOs h = HostOs.parse("macOS") ? e {
+    right_reason = e.message.contains("expected linux, darwin, windows, or any");
+    HostOs.Any;
+  };
+  assert(right_reason, msg: "a near-miss spelling is refused and the set is named");
+  assert(HostOs.parse("darwin")?!.to_string() == "darwin", msg: "the canonical spelling round-trips");
+}
+
+any_matches_every_host() `test {
+  assert(HostOs.Any.matches(HostOs.Windows), msg: "any is a filter, not an OS");
+  assert(HostOs.Linux.matches(HostOs.Linux), msg: "a named OS matches itself");
+  assert(!HostOs.Linux.matches(HostOs.Darwin), msg: "and nothing else");
+}
+
+blocks_come_from_the_vcs_vocabulary() `test {
+  assert(VcsTransition.parse("push:origin")?!.to_string() == "push:origin", msg: "a declared transition round-trips");
+  bool right_reason = false;
+  VcsTransition v = VcsTransition.parse("deploy") ? e {
+    right_reason = e.message.contains("unknown blocks entry");
+    VcsTransition.Commit;
+  };
+  assert(right_reason, msg: "a gate cannot invent a transition to block");
+}
+
+an_exclusion_has_a_closed_scope_and_an_open_leaf() `test {
+  Exclusion x = Exclusion.parse("host:cpu")?!;
+  assert(x.leaf == "cpu", msg: "the leaf is opaque");
+  Exclusion deep = Exclusion.parse("project:migration:v2")?!;
+  assert(deep.leaf == "migration:v2", msg: "only the first colon separates");
+  bool right_reason = false;
+  Exclusion bad = Exclusion.parse("machine:cpu") ? e {
+    right_reason = e.message.contains("unknown exclusion scope");
+    Exclusion.parse("host:cpu")?!;
+  };
+  assert(right_reason, msg: "a scope Reactor cannot resolve is refused at declaration");
+}
+
+a_manifest_accepts_a_precondition_and_a_monitor() `test {
+  Exclusion[] x = Exclusion[]();
+  x.push(Exclusion.parse("host:cpu")?!);
+  GateSpec[] gates = GateSpec[]();
+  gates.push(_gate("tests", _blocks_push(), none, Exclusion[](), none));
+  gates.push(_gate("nightly", VcsTransition[](), Schedule.Every(Duration.from_secs(4 * 3600)), move x, Target.parse("linux/amd64")?!));
+  Manifest m = Manifest.of(_project(), _targets(), OsCommand.of("./make"), move gates)?!;
+  assert(m.gates().len == 2, msg: "both gates survive validation");
+  assert(m.preflight() is present, msg: "a declared preflight is present");
+}
+
+duplicate_gate_names_are_refused() `test {
+  GateSpec[] gates = GateSpec[]();
+  gates.push(_gate("tests", _blocks_push(), none, Exclusion[](), none));
+  gates.push(_gate("tests", _blocks_push(), none, Exclusion[](), none));
+  bool right_reason = false;
+  Manifest m = Manifest.of(_project(), _targets(), none, move gates) ? e {
+    right_reason = e.message.contains("duplicate");
+    Manifest.of(_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a name that keys metric history cannot appear twice");
+}
+
+an_inert_gate_is_refused() `test {
+  GateSpec[] gates = GateSpec[]();
+  gates.push(_gate("never-runs", VcsTransition[](), none, Exclusion[](), none));
+  bool right_reason = false;
+  Manifest m = Manifest.of(_project(), _targets(), none, move gates) ? e {
+    right_reason = e.message.contains("can never run");
+    Manifest.of(_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a gate that blocks nothing and is never scheduled is rejected, not left to sit");
+}
+
+a_gate_cannot_speak_for_an_undeclared_target() `test {
+  GateSpec[] gates = GateSpec[]();
+  gates.push(_gate("wasm", _blocks_push(), none, Exclusion[](), Target.parse("wasm32")?!));
+  bool right_reason = false;
+  Manifest m = Manifest.of(_project(), _targets(), none, move gates) ? e {
+    right_reason = e.message.contains("does not declare");
+    Manifest.of(_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a verdict about a target nobody declared is not a verdict about anything");
+}
+
+a_target_is_a_name_not_a_shape() `test {
+  Target t = Target.parse("wasm32")?!;
+  assert(t.name == "wasm32", msg: "a target need not look like os/arch");
+  bool right_reason = false;
+  Target bad = Target.parse("linux amd64") ? e {
+    right_reason = e.message.contains("whitespace");
+    Target.parse("x")?!;
+  };
+  assert(right_reason, msg: "but it must be a usable name");
+}
+
+a_gate_may_speak_only_for_the_host_that_ran_it() `test {
+  GateSpec[] gates = GateSpec[]();
+  gates.push(_gate("fmt", _blocks_push(), none, Exclusion[](), none));
+  Manifest m = Manifest.of(_project(), _targets(), none, move gates)?!;
+  GateSpec[] gs = m.gates();
+  GateSpec g = gs[0];
+  Target? t = g.target();
+  assert(!(t is present), msg: "no declared target means the host it ran on");
+}
+
+a_timeout_is_a_duration_not_a_string() `test {
+  GateSpec[] gates = GateSpec[]();
+  gates.push(_gate("t", _blocks_push(), none, Exclusion[](), none));
+  Manifest m = Manifest.of(_project(), _targets(), none, move gates)?!;
+  GateSpec[] gs = m.gates();
+  GateSpec g = gs[0];
+  assert(g.timeout == Duration.from_secs(1800), msg: "it compares as a quantity");
+  assert(g.timeout.to_string() == "1800s", msg: "renders: " + g.timeout.to_string());
+}
+
+a_timeout_must_be_positive() `test {
+  HostOs[] os = HostOs[]();
+  os.push(HostOs.Linux);
+  GateSpec[] gates = GateSpec[]();
+  gates.push(GateSpec.of("z", OsCommand.of("x"), none, move os, none,
+                         HostArch[](), Duration.from_secs(0), _blocks_push(), none,
+                         Exclusion[](), string[](), MetricSpec[]()));
+  bool right_reason = false;
+  Manifest m = Manifest.of(_project(), _targets(), none, move gates) ? e {
+    right_reason = e.message.contains("not positive");
+    Manifest.of(_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a gate with no time to run in is a gate that cannot pass");
+}
+
+a_clone_carries_every_field() `test {
+  HostOs[] os = HostOs[]();
+  os.push(HostOs.Darwin);
+  HostArch[] arch = HostArch[]();
+  arch.push(HostArch.Arm64);
+  VcsTransition[] blocks = VcsTransition[]();
+  blocks.push(VcsTransition.PrMerge);
+  Exclusion[] excl = Exclusion[]();
+  excl.push(Exclusion.parse("arena:gpu")?!);
+  string[] tags = string[]();
+  tags.push("slow");
+  MetricSpec[] metrics = MetricSpec[]();
+  metrics.push(MetricSpec.of("tests", MetricType.Int, Direction.Up, MetricMode.Enforced));
+
+  GateSpec g = GateSpec.of("full", OsCommand.of("bin/gate all"), OsCommand.of("bin/gate fix"),
+                           move os, Target.parse("darwin/arm64")?!, move arch,
+                           Duration.from_secs(900), move blocks,
+                           Schedule.Every(Duration.from_secs(3600)), move excl, move tags,
+                           move metrics);
+  GateSpec c = g.clone();
+
+  assert(c.name == "full", msg: "name");
+  assert(c.timeout == Duration.from_secs(900), msg: "timeout");
+  assert(c.command().for_os(HostOs.Darwin) == "bin/gate all", msg: "command");
+  OsCommand? fix = c.fix();
+  assert(fix is present, msg: "fix survives as present");
+  assert(c.host_os().len == 1, msg: "host_os");
+  assert(c.host_arch().len == 1, msg: "host_arch");
+  assert(c.blocks().len == 1, msg: "blocks");
+  assert(c.serialized_by().len == 1, msg: "serialized_by");
+  assert(c.tags().len == 1, msg: "tags");
+  assert(c.metrics().len == 1, msg: "metrics");
+  Target? t = c.target();
+  assert(t is present, msg: "target survives as present");
+  Schedule? sched = c.schedule();
+  assert(sched is present, msg: "schedule survives as present");
+  assert(c.runs_at_all, msg: "and the derived reading still holds");
+}

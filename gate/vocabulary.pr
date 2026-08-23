@@ -1,0 +1,152 @@
+// The closed vocabularies a manifest is written in.
+//
+// Every set here could have been a string, and each one that was would fail the
+// same way: a value spelled `macOS` where `darwin` was meant does not error, it
+// misses a lookup and runs the wrong command. Closed sets refuse it at the
+// boundary and say what was allowed instead.
+//
+// Closed is also the only reversible choice. Opening a set later accepts values
+// that were previously refused, which breaks nothing; closing one later refuses
+// values already written down, which breaks everything holding them — and the
+// wire evolves additively, so there is no version in which that becomes safe.
+
+type VocabularyError is error `public `doc("A value outside the closed set it had to come from.") {
+}
+
+enum HostOs `public `clone `doc("An operating system a gate may run on. `Any` is a filter that matches every host, not an OS.") {
+  Linux,
+  Darwin,
+  Windows,
+  Any,
+
+  parse!(string move name) HostOs `factory `public `doc("Reads the wire spelling. Strict rather than forgiving: `macOS` is a mistake worth a message, not a spelling to quietly accept, because accepting it puts two spellings of one OS into circulation.") {
+    if name == "linux" { return HostOs.Linux; }
+    if name == "darwin" { return HostOs.Darwin; }
+    if name == "windows" { return HostOs.Windows; }
+    if name == "any" { return HostOs.Any; }
+    raise VocabularyError(message: "unknown host_os '" + name + "': expected linux, darwin, windows, or any");
+  }
+
+  to_string(this) string `public `doc("The wire spelling.") => match this {
+    Linux => "linux",
+    Darwin => "darwin",
+    Windows => "windows",
+    Any => "any",
+  };
+
+  matches(this, HostOs host) bool `public `doc("Whether a gate declaring this may run on the given host.") => match this {
+    Any => true,
+    _ => this.to_string() == host.to_string(),
+  };
+}
+
+enum HostArch `public `clone `doc("A machine architecture a gate may be filtered to. Absent from a gate's declaration means any.") {
+  Amd64,
+  Arm64,
+
+  parse!(string move name) HostArch `factory `public `doc("Reads the wire spelling.") {
+    if name == "amd64" { return HostArch.Amd64; }
+    if name == "arm64" { return HostArch.Arm64; }
+    raise VocabularyError(message: "unknown host_arch '" + name + "': expected amd64 or arm64");
+  }
+
+  to_string(this) string `public `doc("The wire spelling.") => match this {
+    Amd64 => "amd64",
+    Arm64 => "arm64",
+  };
+}
+
+enum VcsTransition `public `clone `doc("A transition a gate can be a precondition for, drawn from the VCS half of the capability vocabulary. A gate blocks a transition; it cannot invent one.") {
+  Commit,
+  BranchCreate,
+  PushBranchOwn,
+  PushOrigin,
+  PrCreate,
+  PrMerge,
+
+  parse!(string move name) VcsTransition `factory `public `doc("Reads the wire spelling.") {
+    if name == "commit" { return VcsTransition.Commit; }
+    if name == "branch.create" { return VcsTransition.BranchCreate; }
+    if name == "push:branch:own" { return VcsTransition.PushBranchOwn; }
+    if name == "push:origin" { return VcsTransition.PushOrigin; }
+    if name == "pr.create" { return VcsTransition.PrCreate; }
+    if name == "pr.merge" { return VcsTransition.PrMerge; }
+    raise VocabularyError(message: "unknown blocks entry '" + name + "': expected commit, branch.create, push:branch:own, push:origin, pr.create, or pr.merge");
+  }
+
+  to_string(this) string `public `doc("The wire spelling.") => match this {
+    Commit => "commit",
+    BranchCreate => "branch.create",
+    PushBranchOwn => "push:branch:own",
+    PushOrigin => "push:origin",
+    PrCreate => "pr.create",
+    PrMerge => "pr.merge",
+  };
+}
+
+enum ExclusionScope `public `clone `doc("What an exclusion contends over. Closed because the scope is what makes a name resolvable — Reactor resolves `project:` against the item's project and `host:` against the machine, and could do neither with a scope it has never heard of.") {
+  Project,
+  Host,
+  Arena,
+  Global,
+
+  parse!(string move name) ExclusionScope `factory `public `doc("Reads the wire spelling.") {
+    if name == "project" { return ExclusionScope.Project; }
+    if name == "host" { return ExclusionScope.Host; }
+    if name == "arena" { return ExclusionScope.Arena; }
+    if name == "global" { return ExclusionScope.Global; }
+    raise VocabularyError(message: "unknown exclusion scope '" + name + "': expected project, host, arena, or global");
+  }
+
+  to_string(this) string `public `doc("The wire spelling.") => match this {
+    Project => "project",
+    Host => "host",
+    Arena => "arena",
+    Global => "global",
+  };
+}
+
+type Exclusion `public `doc("One named thing a gate must hold alone. The scope is closed because Reactor resolves it; the leaf is opaque on purpose, so a project can invent `project:migration` without a change to this layer.") {
+  ExclusionScope _scope `final;
+  string _leaf `final;
+
+  parse!(string move text) Self `factory `public `doc("Reads `scope:leaf`. Only the first colon separates — a leaf may contain its own, so `project:migration:v2` is one leaf under one scope.") {
+    string[] parts = text.split(":");
+    if parts.len < 2 {
+      raise VocabularyError(message: "exclusion is not scope:leaf: " + text);
+    }
+    ExclusionScope scope = ExclusionScope.parse(parts[0]);
+    string leaf = parts[1];
+    int i = 2;
+    while i < parts.len {
+      leaf = leaf + ":" + parts[i];
+      i = i + 1;
+    }
+    if leaf.is_empty {
+      raise VocabularyError(message: "exclusion has no leaf: " + text);
+    }
+    return Exclusion(_scope: move scope, _leaf: move leaf);
+  }
+
+  get scope ExclusionScope `public `doc("What this exclusion contends over.") => this._scope;
+  get leaf string `public `doc("The opaque name within that scope.") => this._leaf;
+  to_string(this) string `public `doc("The wire spelling.") => this._scope.to_string() + ":" + this._leaf;
+}
+
+type Target `public `clone `doc("Something the project builds for — one entry in what invariant 1 means by \"every platform\". Open on purpose: a project declares its own set, and there is no universal shape to check, since `wasm32` and `linux/amd64` are both legitimate. Reactor never interprets a target; it matches and groups, so the set is closed per manifest rather than by this layer.") {
+  string _name `final;
+
+  parse!(string move name) Self `factory `public `doc("Rejects a name that cannot identify a target. The shape is the project's business; being a usable name is not.") {
+    if name.is_empty {
+      raise VocabularyError(message: "target name is empty");
+    }
+    if name.contains(" ") {
+      raise VocabularyError(message: "target name contains whitespace: " + name);
+    }
+    return Target(_name: move name);
+  }
+
+  get name string `public `doc("The declared name.") => this._name;
+  to_string(this) string `public `doc("The declared name, unchanged.") => this._name;
+  == (Target other) bool `public `doc("Two targets match when their names do.") => this._name == other._name;
+}

@@ -15,7 +15,7 @@ use json;
 type GateError is error `public `doc("A gate envelope that cannot be accepted.") {
 }
 
-enum MetricValue `public `doc("One measurement. Integers stay integers: a test count encoded as a float is a count nobody can compare exactly.") {
+enum MetricValue `public `clone `doc("One measurement. Integers stay integers: a test count encoded as a float is a count nobody can compare exactly.") {
   Int(int value),
   Float(f64 value),
 
@@ -50,26 +50,30 @@ type GateOutput `public `doc("One gate run's result. Written as a single JSON ob
   string _target `final;
   map[string, MetricValue] _metrics `final;
   MetricGroup[] _groups `final;
-  bool _complete `final;
-  string _incomplete_reason `final;
+  string? _incomplete_reason `final;
 
   of(string move target, map[string, MetricValue] move metrics) Self `factory `public `doc("A run that measured everything it normally measures, for one target. One gate run reports one target — that is invariant, not a convenience.") {
     return GateOutput(_schema_version: 1, _target: move target, _metrics: move metrics,
-                      _groups: MetricGroup[](), _complete: true, _incomplete_reason: "");
+                      _groups: MetricGroup[](), _incomplete_reason: none);
   }
 
   partial(string move target, map[string, MetricValue] move metrics, string move reason) Self `factory `public `doc("A run that could not measure everything — a suite skipped for a missing tool, a subset deliberately selected. The reason is carried because a human decides what to do about it.") {
     return GateOutput(_schema_version: 1, _target: move target, _metrics: move metrics,
-                      _groups: MetricGroup[](), _complete: false, _incomplete_reason: move reason);
+                      _groups: MetricGroup[](), _incomplete_reason: move reason);
   }
 
   get schema_version int `public `doc("Wire version. Reactor refuses unknown majors.") => this._schema_version;
 
   get target string `public `doc("Which declared target this run's verdict speaks for.") => this._target;
 
-  get complete bool `public `doc("Whether these measurements cover everything this gate normally measures. A run that skipped a suite reports honest numbers that understate the tree, which is indistinguishable from a regression unless the gate says so. **Reactor must not move a baseline from an incomplete run** — ratcheting on one would lower the floor for a reason that is not about the code.") => this._complete;
+  get complete bool `public `doc("Whether these measurements cover everything this gate normally measures. A run that skipped a suite reports honest numbers that understate the tree, which is indistinguishable from a regression unless the gate says so. **Reactor must not move a baseline from an incomplete run** — ratcheting on one would lower the floor for a reason that is not about the code. Derived: a run is complete exactly when it carries no reason not to be, so it cannot claim both.") => !(this._incomplete_reason is present);
 
-  get incomplete_reason string `public `doc("Why the run measured less than usual; empty when it did not. Carried in the envelope rather than left on stderr, which nothing parses.") => this._incomplete_reason;
+  incomplete_reason(this) string? `public `doc("Why the run measured less than usual, absent when it did not. Carried in the envelope rather than left on stderr, which nothing parses. Allocates.") {
+    if this._incomplete_reason is present {
+      return this._incomplete_reason!.clone();
+    }
+    return none;
+  }
 
   metrics(this) map[string, MetricValue] `public `doc("The measurements, keyed by the names the manifest declared. Allocates.") => this._metrics.clone();
 
@@ -99,9 +103,11 @@ type GateOutput `public `doc("One gate run's result. Written as a single JSON ob
     }
     e.end_array();
     e.encode_key("complete");
-    e.encode_bool(this._complete);
-    e.encode_key("incomplete_reason");
-    e.encode_string(this._incomplete_reason);
+    e.encode_bool(this.complete);
+    if this._incomplete_reason is present {
+      e.encode_key("incomplete_reason");
+      e.encode_string(this._incomplete_reason!);
+    }
     e.end_object();
   }
 }

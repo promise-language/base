@@ -51,7 +51,12 @@ a_partial_run_says_so_and_says_why() `test {
   m["test_count"] = MetricValue.Int(3000);
   GateOutput out = GateOutput.partial("linux/amd64", move m, "wasm suite skipped: no wasmtime on this host");
   assert(!out.complete, msg: "an incomplete run is marked");
-  assert(out.incomplete_reason.contains("wasmtime"), msg: "and says why, in the envelope");
+  string? why = out.incomplete_reason();
+  bool named = false;
+  if why is present {
+    named = why.contains("wasmtime");
+  }
+  assert(named, msg: "and says why, in the envelope, naming the cause");
   string s = json.encode_string(out)?!;
   assert(s.contains("\"complete\":false"), msg: "the marker crosses the wire");
 }
@@ -59,5 +64,8 @@ a_partial_run_says_so_and_says_why() `test {
 a_complete_run_carries_no_reason() `test {
   GateOutput out = GateOutput.of("linux/amd64", _metrics());
   assert(out.complete, msg: "a full run is complete");
-  assert(out.incomplete_reason.is_empty, msg: "and has nothing to explain");
+  string? why = out.incomplete_reason();
+  assert(!(why is present), msg: "and has nothing to explain");
+  string j = json.encode_string(out)?!;
+  assert(!j.contains("incomplete_reason"), msg: "and the key is absent on the wire, not empty: " + j);
 }

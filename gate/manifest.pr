@@ -1,0 +1,226 @@
+// The gate manifest: what a project declares about its own gates.
+//
+// Reactor discovers gates by running the project's listing command and reading
+// this back. The project owns every value here; Reactor owns only what it does
+// with them — scheduling, arena assignment, ratchet state.
+
+use wire "../wire";
+
+type OsOverride `public `clone `doc("One per-OS replacement for a command's default line.") {
+  HostOs _os `final;
+  string _line `final;
+
+  of(HostOs move os, string move line) Self `factory `public `doc("Binds a line to the OS it runs on.") {
+    return OsOverride(_os: move os, _line: move line);
+  }
+
+  get os HostOs `public `doc("Which OS this line is for.") => this._os;
+  get line string `public `doc("The line to run there.") => this._line;
+}
+
+type OsCommand `public `clone `doc("An exec line, optionally dispatched per host OS. A bare string is used everywhere; an override wins over the default on the OS it names.") {
+  string _default `final;
+  OsOverride[] _overrides `final;
+
+  of(string move line) Self `factory `public `doc("One command for every OS.") {
+    return OsCommand(_default: move line, _overrides: OsOverride[]());
+  }
+
+  dispatched(string move fallback, OsOverride[] move overrides) Self `factory `public `doc("A default plus per-OS overrides. Overrides are typed rather than keyed by string, so there is no spelling of an OS that silently misses.") {
+    return OsCommand(_default: move fallback, _overrides: move overrides);
+  }
+
+  // A list rather than a map because an enum cannot key one — it satisfies neither
+  // Hashable nor Equal even with hash and == declared (promise-language/promise#40).
+  // At three entries the scan is not the cost that matters; the typed key is.
+  for_os(this, HostOs os) string `public `doc("The line to run on this OS: the override naming it, or the default.") {
+    int i = 0;
+    while i < this._overrides.len {
+      if this._overrides[i].os.to_string() == os.to_string() {
+        return this._overrides[i].line;
+      }
+      i = i + 1;
+    }
+    return this._default;
+  }
+
+  get is_empty bool `public `doc("Whether no command was declared at all — how an absent optional command reads.") => this._default.is_empty && this._overrides.len == 0;
+}
+
+enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` on the wire; `kind` here, because `type` is a keyword. Declared so Reactor can compare exactly rather than guess from the value it happens to receive.") {
+  Int,
+  Float,
+}
+
+enum Direction `public `clone `doc("Which way is better. A ratchet only ever moves this way.") {
+  Up,
+  Down,
+}
+
+enum MetricMode `public `clone `doc("Whether a metric binds. Enforced metrics gate a transition; informational ones are recorded and never block.") {
+  Enforced,
+  Informational,
+}
+
+enum Schedule `public `clone `doc("How often a gate runs as a monitor. Three cadences that cannot be written as one another: a period, an event, and a person. Daily and weekly are periods and are spelled as such — a named preset for a `Duration` a project can already write is a second way to say the same thing, and one whose meaning is undecided besides, since it does not say whether the next run is a day after the last or at a fixed hour. A gate with no schedule is a pure precondition, run only when the transition it blocks is attempted — absence of a cadence, not a cadence named none.") {
+  Every(Duration interval),
+  AfterEveryCommit,
+  Manual,
+}
+
+type MetricSpec `public `clone `doc("One metric a gate emits, and the terms it is judged on.") {
+  string _name `final;
+  MetricType _kind `final;
+  Direction _direction `final;
+  MetricMode _mode `final;
+  bool _has_cap `final;
+  MetricValue _cap `final;
+
+  of(string move name, MetricType move kind, Direction move direction, MetricMode move mode) Self `factory `public `doc("A metric with no cap — judged against its baseline alone.") {
+    return MetricSpec(_name: move name, _kind: move kind, _direction: move direction, _mode: move mode,
+                      _has_cap: false, _cap: MetricValue.Int(0));
+  }
+
+  capped(string move name, MetricType move kind, Direction move direction, MetricMode move mode, MetricValue move cap) Self `factory `public `doc("A metric with an absolute bound as well as a baseline — test_failures at 0, say, which no history may relax.") {
+    return MetricSpec(_name: move name, _kind: move kind, _direction: move direction, _mode: move mode,
+                      _has_cap: true, _cap: move cap);
+  }
+
+  get name string `public `doc("The key this metric appears under in a gate's envelope.") => this._name;
+  get kind MetricType `public `doc("What this metric measures in.") => this._kind;
+  get direction Direction `public `doc("Which way is better.") => this._direction;
+  get mode MetricMode `public `doc("Whether this metric binds a transition.") => this._mode;
+  get has_cap bool `public `doc("Whether an absolute bound was declared.") => this._has_cap;
+
+  get cap MetricValue `public `doc("The absolute bound. Meaningless unless has_cap.") => this._cap;
+}
+
+type GateSpec `public `doc("One gate a project declares. Every field is the project's to state; Reactor decides only where and when it runs.") {
+  string _name `final;
+  OsCommand _command `final;
+  OsCommand? _fix `final;
+  HostOs[] _host_os `final;
+  Target? _target `final;
+  HostArch[] _host_arch `final;
+  Duration _timeout `final;
+  VcsTransition[] _blocks `final;
+  Schedule? _schedule `final;
+  Exclusion[] _serialized_by `final;
+  string[] _tags `final;
+  MetricSpec[] _metrics `final;
+
+  of(string move name, OsCommand move command, OsCommand? move fix, HostOs[] move host_os,
+     Target? move target, HostArch[] move host_arch, Duration timeout, VcsTransition[] move blocks,
+     Schedule? move schedule, Exclusion[] move serialized_by, string[] move tags,
+     MetricSpec[] move metrics) Self `factory `public `doc("A gate as declared. What a project omits is absent rather than empty: no fix command, no target (the verdict speaks for the host that ran it), no cadence (a pure precondition). An empty arch, exclusion, or tag list is a real empty list — no filter, not a missing one.") {
+    return GateSpec(_name: move name, _command: move command, _fix: move fix,
+                    _host_os: move host_os, _target: move target, _host_arch: move host_arch,
+                    _timeout: timeout, _blocks: move blocks, _schedule: move schedule,
+                    _serialized_by: move serialized_by, _tags: move tags, _metrics: move metrics);
+  }
+
+  get name string `public `doc("Stable id. Keys metric history and baselines, and must be unique within its manifest.") => this._name;
+  get timeout Duration `public `doc("How long the gate's work may take. Bounds work, never queue wait.") => this._timeout;
+  schedule(this) Schedule? `public `doc("Monitor cadence, absent for a pure precondition. Allocates.") {
+    if this._schedule is present {
+      return this._schedule!.clone();
+    }
+    return none;
+  }
+  target(this) Target? `public `doc("Which declared target this gate's verdict speaks for. Absent means it speaks only for the host that ran it. Allocates.") {
+    if this._target is present {
+      return this._target!.clone();
+    }
+    return none;
+  }
+
+  command(this) OsCommand `public `doc("The exec line, before OS dispatch. Allocates.") => this._command.clone();
+  fix(this) OsCommand? `public `doc("The deterministic remediation line, absent when the project declared none. Never run by the gate runner. Allocates.") {
+    if this._fix is present {
+      return this._fix!.clone();
+    }
+    return none;
+  }
+  blocks(this) VcsTransition[] `public `doc("Transitions this gate is a precondition for. Empty means it blocks nothing. Allocates.") => this._blocks.clone();
+  host_os(this) HostOs[] `public `doc("Which host operating systems it may run on. Allocates.") => this._host_os.clone();
+  host_arch(this) HostArch[] `public `doc("Optional architecture filter. Empty means any. Allocates.") => this._host_arch.clone();
+  serialized_by(this) Exclusion[] `public `doc("Exclusions it needs, each scope:leaf. Allocates.") => this._serialized_by.clone();
+  tags(this) string[] `public `doc("Free-form labels. Allocates.") => this._tags.clone();
+  metrics(this) MetricSpec[] `public `doc("What this gate measures. Allocates.") => this._metrics.clone();
+
+  clone(this) GateSpec `public `doc("An independent copy. Written out only because synthesis is broken for optional fields (promise-language/promise#41): `clone on this type does not compile, and without it an array clone corrupts the heap. Delete this method when that lands — a hand-written clone is a second copy of the field list, and a field added without a line here is dropped silently. `a_clone_carries_every_field` is the tripwire: adding a field changes `of()`, which forces that test to be edited.") {
+    return GateSpec(_name: this._name, _command: this._command.clone(), _fix: this.fix(),
+                    _host_os: this._host_os.clone(), _target: this.target(),
+                    _host_arch: this._host_arch.clone(), _timeout: this._timeout,
+                    _blocks: this._blocks.clone(), _schedule: this.schedule(),
+                    _serialized_by: this._serialized_by.clone(), _tags: this._tags.clone(),
+                    _metrics: this._metrics.clone());
+  }
+
+  get runs_at_all bool `public `doc("Whether this gate can ever run. A gate declaring neither a transition to block nor a cadence to run on is inert, and a manifest carrying one is rejected rather than left to sit.") => this._blocks.len > 0 || this._schedule is present;
+}
+
+_declares_target(Target[] targets, Target wanted) bool {
+  int i = 0;
+  while i < targets.len {
+    Target t = targets[i];
+    if t == wanted {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+type Manifest `public `doc("Everything a project declares about its gates. Reactor validates this on discovery and refuses a manifest it cannot trust.") {
+  int _schema_version `final;
+  wire.ProjectId _project `final;
+  Target[] _targets `final;
+  OsCommand? _preflight `final;
+  GateSpec[] _gates `final;
+
+  of!(wire.ProjectId move project, Target[] move targets, OsCommand? move preflight,
+      GateSpec[] move gates) Self `factory `public `doc("Builds a manifest and applies every rule that makes one usable: gate names unique, no inert gate, and no gate speaking for a target the manifest never declared. The closed vocabularies enforce themselves at their own boundary.") {
+    map[string, bool] seen = map[string, bool]();
+    int i = 0;
+    while i < gates.len {
+      // Bound once rather than indexed repeatedly: a method call on an array
+      // index leaks the element copy (promise-language/promise#39).
+      GateSpec g = gates[i];
+      string name = g.name;
+      if seen.contains(name) {
+        raise GateError(message: "duplicate gate name in manifest: " + name);
+      }
+      seen[name] = true;
+      if !g.runs_at_all {
+        raise GateError(message: "gate declares neither blocks nor schedule and can never run: " + name);
+      }
+      Target? t = g.target();
+      if t is present {
+        if !_declares_target(targets, t) {
+          raise GateError(message: "gate '" + name + "' speaks for a target the manifest does not declare: " + t.to_string());
+        }
+      }
+      if g.timeout.as_nanos <= 0 {
+        raise GateError(message: "gate '" + name + "' declares a timeout that is not positive: " + g.timeout.to_string());
+      }
+      i = i + 1;
+    }
+    return Manifest(_schema_version: 1, _project: move project, _targets: move targets,
+                    _preflight: move preflight, _gates: move gates);
+  }
+
+  get schema_version int `public `doc("Wire version. Reactor refuses unknown majors.") => this._schema_version;
+
+  get project wire.ProjectId `public `doc("Which project this manifest claims to belong to. It is a claim, not a fact: Reactor knows the project from the worktree's origin, and a manifest naming a different one is refused rather than believed — the same tripwire the companion pointer is.") => this._project.clone();
+
+  preflight(this) OsCommand? `public `doc("The setup command run after a fresh checkout, before any gate. Absent when the project declared none. Allocates.") {
+    if this._preflight is present {
+      return this._preflight!.clone();
+    }
+    return none;
+  }
+
+  targets(this) Target[] `public `doc("What the product is built for — what 'every platform' means for this project. Allocates.") => this._targets.clone();
+  gates(this) GateSpec[] `public `doc("The declared gates. Allocates.") => this._gates.clone();
+}

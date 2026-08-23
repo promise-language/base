@@ -7,7 +7,7 @@
 type IdentityError is error `public `doc("A reference that cannot be accepted as an identity.") {
 }
 
-type ProjectId `public `doc("A project's identity: the canonical URL of its repository. The host selects the identity adapter, and canonicalization is that adapter's job, so this type holds an already-canonical value.") {
+type ProjectId `public `clone `doc("A project's identity: the canonical URL of its repository. The host selects the identity adapter, and canonicalization is that adapter's job, so this type holds an already-canonical value.") {
   string _url `final;
 
   of(string move canonical_url) Self `factory `public `doc("Wraps a URL the adapter has already canonicalized. Callers holding an unvalidated string use parse instead.") {
@@ -52,12 +52,10 @@ type ProjectId `public `doc("A project's identity: the canonical URL of its repo
 
   to_string(this) string `public `doc("The canonical repository URL, unchanged.") => this._url;
 
-  clone(this) ProjectId `public `doc("An independent copy. Allocates, so it is a method rather than a getter.") => ProjectId(_url: this._url);
-
   == (ProjectId other) bool `public `doc("Two projects are the same when their canonical URLs are.") => this._url == other._url;
 }
 
-type ItemId `public `doc("An item's identity: its project, plus the id its item authority gave it. Written as the project URL, a hash, and the local id.") {
+type ItemId `public `clone `doc("An item's identity: its project, plus the id its item authority gave it. Written as the project URL, a hash, and the local id.") {
   ProjectId _project `final;
   string _local `final;
 
@@ -80,8 +78,6 @@ type ItemId `public `doc("An item's identity: its project, plus the id its item 
 
   get local string `public `doc("The id this item's authority assigned, unique within its project.") => this._local;
 
-  clone(this) ItemId `public `doc("An independent copy.") => ItemId(_project: this._project.clone(), _local: this._local);
-
   to_string(this) string `public `doc("The reference form: the project URL, a hash, and the local id.") {
     return this._project.url + "#" + this._local;
   }
@@ -91,7 +87,7 @@ type ItemId `public `doc("An item's identity: its project, plus the id its item 
   }
 }
 
-type StepName `public `doc("A step's name, as the flow's describe output declares it. Unique within one flow, and the name a step grant refers to.") {
+type StepName `public `clone `doc("A step's name, as the flow's describe output declares it. Unique within one flow, and the name a step grant refers to.") {
   string _name `final;
 
   of(string move name) Self `factory `public `doc("Wraps a declared step name.") {
@@ -109,12 +105,10 @@ type StepName `public `doc("A step's name, as the flow's describe output declare
 
   to_string(this) string `public `doc("The declared name, unchanged.") => this._name;
 
-  clone(this) StepName `public `doc("An independent copy.") => StepName(_name: this._name);
-
   == (StepName other) bool `public `doc("Two step names match when their text does.") => this._name == other._name;
 }
 
-type StepRunId `public `doc("One dispatch of one step: the grain at which a grant is given, cost is attributed, and an artifact or checkpoint is owned. Minted by Reactor — a flow receives one and never constructs its own.") {
+type StepRunId `public `clone `doc("One dispatch of one step: the grain at which a grant is given, cost is attributed, and an artifact or checkpoint is owned. Minted by Reactor — a flow receives one and never constructs its own.") {
   string _value `final;
 
   of(string move value) Self `factory `public `doc("Reads a minted id off the wire. Nothing outside Reactor mints one.") {
@@ -125,12 +119,10 @@ type StepRunId `public `doc("One dispatch of one step: the grain at which a gran
 
   to_string(this) string `public `doc("The opaque minted value, unchanged.") => this._value;
 
-  clone(this) StepRunId `public `doc("An independent copy.") => StepRunId(_value: this._value);
-
   == (StepRunId other) bool `public `doc("Minted ids match exactly or not at all.") => this._value == other._value;
 }
 
-type QuestionId `public `doc("A question raised against an item. Minted by Reactor when the question is recorded, and referenced by the answer that resolves it.") {
+type QuestionId `public `clone `doc("A question raised against an item. Minted by Reactor when the question is recorded, and referenced by the answer that resolves it.") {
   string _value `final;
 
   of(string move value) Self `factory `public `doc("Reads a minted id off the wire.") {
@@ -141,12 +133,10 @@ type QuestionId `public `doc("A question raised against an item. Minted by React
 
   to_string(this) string `public `doc("The opaque minted value, unchanged.") => this._value;
 
-  clone(this) QuestionId `public `doc("An independent copy.") => QuestionId(_value: this._value);
-
   == (QuestionId other) bool `public `doc("Minted ids match exactly or not at all.") => this._value == other._value;
 }
 
-type ArticleKey `public `doc("A feed article's durable identity, chosen by whoever posts it and namespaced by them. For an article projecting a standing condition the key is a pure function of that condition, so two posts about one condition collide rather than accumulating.") {
+type ArticleKey `public `clone `doc("A feed article's durable identity, chosen by whoever posts it and namespaced by them. For an article projecting a standing condition the key is a pure function of that condition, so two posts about one condition collide rather than accumulating.") {
   string _key `final;
 
   of(string move key) Self `factory `public `doc("Wraps a creator-namespaced key.") {
@@ -163,8 +153,6 @@ type ArticleKey `public `doc("A feed article's durable identity, chosen by whoev
   get key string `public `doc("The namespaced key.") => this._key;
 
   to_string(this) string `public `doc("The namespaced key, unchanged.") => this._key;
-
-  clone(this) ArticleKey `public `doc("An independent copy.") => ArticleKey(_key: this._key);
 
   == (ArticleKey other) bool `public `doc("Two article keys match when their text does.") => this._key == other._key;
 }

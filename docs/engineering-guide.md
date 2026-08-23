@@ -57,11 +57,49 @@ in the tree are the project's whatever their origin. Two honest consequences:
   `bytes()`. The parentheses tell a caller that work happens. **Interface conformance overrides
   this**: where a `` `structural `` interface declares a getter, every implementor matches the form
   even if its own implementation is O(n).
+- **A set that can be closed is closed.** An operating system is `linux` / `darwin` / `windows`, not
+  a string — because a string admits `macOS`, and the failure is silent: a lookup that misses does
+  not raise, it falls through to a default and runs the wrong thing. A closed set refuses the value
+  at the boundary and names what was allowed instead.
+
+  **Closed is also the only reversible choice.** Opening a set later accepts values that were
+  previously refused, which breaks nothing. Closing one later refuses values already written down,
+  which breaks everything holding them — and since the wire evolves additively, there is no version
+  in which that becomes safe. So the question is never "might this need to grow?" but "must it be
+  open *today*?"
+
+  What stays open is what a project invents and the system only carries: tags, metric names, the leaf
+  of an exclusion, the set of build targets. What closes is anything the system must *interpret* —
+  if a value changes what the code does, its set is closed.
+- **Absence is an optional, never a sentinel.** A field that is sometimes not there is `T?` — not an
+  empty string, not a zero, not a `None` case bolted onto an enum, and not a `has_x` bool sitting
+  beside the value it guards. Every one of those spellings admits a state that means nothing: complete
+  *and* carrying a reason it was not, `has_fix` false *and* a fix command sitting in the field. An
+  optional deletes those states rather than documenting them, and it puts the check where the compiler
+  can insist on it instead of in a doc comment a caller may not read.
+
+  The reach of that is wider than it looks: a target that means "the host it ran on" when empty, a
+  schedule whose `None` case means "never scheduled", a preflight that is the empty command — all
+  three were sentinels wearing a type. What is *not* absence is an empty collection: no arch filter,
+  no tags, and no exclusions are real empty lists, and `T[]?` would only add a second way to say the
+  same thing.
+
+  Reading one back is not obvious from the errors, so: `if this._field is present { return
+  this._field!.clone(); }`. `if v := this._field` moves out of the field, `!= none` is not defined,
+  and an optional carries no members of its own. Inside an `if x is present` body a **local** is
+  narrowed and needs no `!`; a field is not, and still does. Narrowing does not cross `&&` or reach
+  the statement after the `if`, so nest the checks.
 - **Identities are types, never bare `string` or `int`.** The
   [identity model](https://github.com/promise-language/reactor/blob/main/docs/design.md#identity) names eighteen distinct things, and the ones crossing
   an owner boundary are published here. A function taking three `string`s takes them in an order
   nothing checks, and an item id assigned to a project id is a bug the compiler should have caught.
   Identity types are value types, immutable, all fields `` `final ``.
+- **A quantity is the standard library's type for it.** A timeout is a `Duration`, not `"30m"`; a
+  moment is a `DateTime`, not an epoch `int`. A string holding a quantity has to be parsed at every
+  use, cannot be compared or added, and pushes its format — `30m`, `30 min`, `PT30M` — onto everyone
+  who writes one. The stdlib type parses once at the boundary and is a number everywhere after. This
+  is the [reuse rule](#do-not-work-around-the-platform) applied to values rather than behaviour: if
+  the quantity has no type yet, ask for one upstream rather than passing a string.
 
 ## Comments and documentation
 
