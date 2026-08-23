@@ -106,7 +106,7 @@ enum ExclusionScope `public `clone `doc("What an exclusion contends over. Closed
   };
 }
 
-type Exclusion `public `doc("One named thing a gate must hold alone. The scope is closed because Reactor resolves it; the leaf is opaque on purpose, so a project can invent `project:migration` without a change to this layer.") {
+type Exclusion `public `clone `doc("One named thing a gate must hold alone. The scope is closed because Reactor resolves it; the leaf is opaque on purpose, so a project can invent `project:migration` without a change to this layer.") {
   ExclusionScope _scope `final;
   string _leaf `final;
 

@@ -105,6 +105,15 @@ in the tree are the project's whatever their origin. Two honest consequences:
 
 - **`` `doc `` on every `` `public `` declaration.** It is the API surface that tooling and agents
   read; describe behaviour, not the signature.
+
+  **A synthesized member is exempt, because it has no declaration to annotate.** A type marked
+  `` `clone `` publishes a `clone` nobody wrote, and the annotation on the type is the documentation:
+  it says the member exists, and the language says what it does. Writing the member out by hand to
+  have somewhere to hang a `` `doc `` on gets that backwards — it trades a guarantee the compiler
+  makes for a sentence a reader has to trust, and ten copies of *"An independent copy."* document
+  nothing the annotation did not already say. **So prefer the annotation wherever it compiles**, and
+  where it does not, the hand-written member is a workaround and its `` `doc `` says which defect it
+  is waiting on.
 - **No decorative banners.** `// ── Section ──` carries no meaning, costs tokens, and rots.
 - **Default to no comments.** Names carry meaning. Comment the *why* when it is non-obvious — a
   hidden constraint, a subtle invariant, a workaround and the issue it waits on.
