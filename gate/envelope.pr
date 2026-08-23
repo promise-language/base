@@ -9,22 +9,25 @@
 // There is no marker for "the envelope is whole". A gate killed mid-write emits
 // malformed JSON, which already fails to parse, so a completeness flag meaning
 // that would say nothing the parser does not.
-
-use json;
+//
+// Nor is there one for "the measurements are whole". A run that measured less
+// than usual carries the reason it did; a run that measured everything carries
+// nothing. Completeness is read off that absence on both sides, so the wire has
+// no field a reader could find disagreeing with the reason sitting beside it.
+//
+// The encoding is derived rather than written. Hand-writing it bought one thing
+// — bare numbers for measurements — and cost the envelope its readability: a
+// bare 5 is an int and a float alike, so nothing could read back what a gate
+// wrote without the manifest open beside it. The type now travels with the
+// value, and the envelope means the same thing to a reader that it meant to
+// the gate that wrote it.
 
 type GateError is error `public `doc("A gate envelope that cannot be accepted.") {
 }
 
-enum MetricValue `public `clone `doc("One measurement. Integers stay integers: a test count encoded as a float is a count nobody can compare exactly.") {
+enum MetricValue `public `serializable `clone `doc("One measurement. Integers stay integers: a test count encoded as a float is a count nobody can compare exactly. The measured type is written beside the value rather than left to the reader, because a bare 5 is an int and a float alike and JSON cannot tell them apart — so the envelope round-trips, and a value that disagrees with what the manifest declared is a mismatch a reader can name instead of a widening it cannot see.") {
   Int(int value),
   Float(f64 value),
-
-  encode!(Encoder ~e) `public `doc("Writes the measurement in its own type.") {
-    match this {
-      Int(v) => e.encode_int(v),
-      Float(v) => e.encode_f64(v),
-    }
-  }
 
   to_string(this) string `public `doc("The measurement as text, in its own type.") => match this {
     Int(v) => v.to_string(),
@@ -32,9 +35,9 @@ enum MetricValue `public `clone `doc("One measurement. Integers stay integers: a
   };
 }
 
-type MetricGroup `public `doc("Measurements for one part of a run — a package, a file, a suite. A total says a ratchet moved; a group says where, which is the difference between a bisect and a glance.") {
-  string _name `final;
-  map[string, MetricValue] _metrics `final;
+type MetricGroup `public `serializable `clone `doc("Measurements for one part of a run — a package, a file, a suite. A total says a ratchet moved; a group says where, which is the difference between a bisect and a glance.") {
+  string _name `final `key("name");
+  map[string, MetricValue] _metrics `final `key("metrics");
 
   of(string move name, map[string, MetricValue] move metrics) Self `factory `public `doc("Builds a named group of measurements.") {
     return MetricGroup(_name: move name, _metrics: move metrics);
@@ -45,19 +48,22 @@ type MetricGroup `public `doc("Measurements for one part of a run — a package,
   get metrics map[string, MetricValue] `public `doc("The measurements, keyed by the names the manifest declared.") => this._metrics.clone();
 }
 
-type GateOutput `public `doc("One gate run's result. Written as a single JSON object on stdout; human-readable progress belongs on stderr, which Reactor never parses.") {
-  int _schema_version `final;
-  string _target `final;
-  map[string, MetricValue] _metrics `final;
-  MetricGroup[] _groups `final;
-  string? _incomplete_reason `final;
+type GateOutput `public `serializable `doc("One gate run's result. Written as a single JSON object on stdout; human-readable progress belongs on stderr, which Reactor never parses.") {
+  int _schema_version `final `key("schema_version");
+  string _target `final `key("target");
+  map[string, MetricValue] _metrics `final `key("metrics");
+  MetricGroup[] _groups `final `key("groups");
+  string? _incomplete_reason `final `key("incomplete_reason");
 
   of(string move target, map[string, MetricValue] move metrics) Self `factory `public `doc("A run that measured everything it normally measures, for one target. One gate run reports one target — that is invariant, not a convenience.") {
     return GateOutput(_schema_version: 1, _target: move target, _metrics: move metrics,
                       _groups: MetricGroup[](), _incomplete_reason: none);
   }
 
-  partial(string move target, map[string, MetricValue] move metrics, string move reason) Self `factory `public `doc("A run that could not measure everything — a suite skipped for a missing tool, a subset deliberately selected. The reason is carried because a human decides what to do about it.") {
+  partial!(string move target, map[string, MetricValue] move metrics, string move reason) Self `factory `public `doc("A run that could not measure everything — a suite skipped for a missing tool, a subset deliberately selected. The reason is carried because a human decides what to do about it, and an empty one is refused: completeness is this reason's absence, so a run that is incomplete with nothing to say is the one state this envelope has no way to mean.") {
+    if reason.is_empty {
+      raise GateError(message: "an incomplete run must say why it measured less than usual");
+    }
     return GateOutput(_schema_version: 1, _target: move target, _metrics: move metrics,
                       _groups: MetricGroup[](), _incomplete_reason: move reason);
   }
@@ -67,6 +73,17 @@ type GateOutput `public `doc("One gate run's result. Written as a single JSON ob
   get target string `public `doc("Which declared target this run's verdict speaks for.") => this._target;
 
   get complete bool `public `doc("Whether these measurements cover everything this gate normally measures. A run that skipped a suite reports honest numbers that understate the tree, which is indistinguishable from a regression unless the gate says so. **Reactor must not move a baseline from an incomplete run** — ratcheting on one would lower the floor for a reason that is not about the code. Derived: a run is complete exactly when it carries no reason not to be, so it cannot claim both.") => !(this._incomplete_reason is present);
+
+  validate!(this) `public `doc("Raises on an envelope that cannot mean what it says. The factories enforce this on anything built in Promise; **an envelope that arrived over the wire has been through none of them**, because a derived decode constructs the type field by field rather than through a factory (promise-language/promise#45). So a consumer runs this after decoding, and a gate written in another language is held to the same rule as one written here.") {
+    if this._target.is_empty {
+      raise GateError(message: "an envelope names no target, so its verdict speaks for nothing");
+    }
+    if this._incomplete_reason is present {
+      if this._incomplete_reason!.is_empty {
+        raise GateError(message: "an incomplete run must say why it measured less than usual");
+      }
+    }
+  }
 
   incomplete_reason(this) string? `public `doc("Why the run measured less than usual, absent when it did not. Carried in the envelope rather than left on stderr, which nothing parses. Allocates.") {
     if this._incomplete_reason is present {
@@ -83,40 +100,4 @@ type GateOutput `public `doc("One gate run's result. Written as a single JSON ob
     this._groups.push(move group);
   }
 
-  encode!(Encoder ~e) `public `doc("Writes the envelope as one JSON object.") {
-    e.begin_object(6);
-    e.encode_key("schema_version");
-    e.encode_int(this._schema_version);
-    e.encode_key("target");
-    e.encode_string(this._target);
-    e.encode_key("metrics");
-    _encode_metrics(e, this._metrics);
-    e.encode_key("groups");
-    e.begin_array(this._groups.len);
-    for g in this._groups {
-      e.begin_object(2);
-      e.encode_key("name");
-      e.encode_string(g.name);
-      e.encode_key("metrics");
-      _encode_metrics(e, g.metrics);
-      e.end_object();
-    }
-    e.end_array();
-    e.encode_key("complete");
-    e.encode_bool(this.complete);
-    if this._incomplete_reason is present {
-      e.encode_key("incomplete_reason");
-      e.encode_string(this._incomplete_reason!);
-    }
-    e.end_object();
-  }
-}
-
-_encode_metrics!(Encoder ~e, map[string, MetricValue] metrics) {
-  e.begin_object(metrics.len);
-  for k, v in metrics {
-    e.encode_key(k);
-    v.encode(e);
-  }
-  e.end_object();
 }

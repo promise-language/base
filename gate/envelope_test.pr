@@ -1,3 +1,5 @@
+use json;
+
 _metrics() map[string, MetricValue] {
   map[string, MetricValue] m = map[string, MetricValue]();
   m["test_count"] = MetricValue.Int(17703);
@@ -10,13 +12,14 @@ envelope_encodes_as_one_object() `test {
   string s = json.encode_string(out)?!;
   assert(s.contains("\"schema_version\":1"), msg: "carries its wire version");
   assert(s.contains("\"target\":\"linux/amd64\""), msg: "carries the target it speaks for");
-  assert(s.contains("\"complete\":true"), msg: "carries the completion marker");
+  assert(!s.contains("\"complete\""), msg: "and no completeness field: it is derived from the reason, not written twice: " + s);
 }
 
 integer_metrics_stay_integers() `test {
   GateOutput out = GateOutput.of("linux/amd64", _metrics());
   string s = json.encode_string(out)?!;
-  assert(s.contains("\"test_count\":17703"), msg: "a count is not encoded as a float");
+  assert(s.contains("\"type\":\"Int\""), msg: "a count says it is one: " + s);
+  assert(s.contains("\"value\":17703"), msg: "and carries the exact count: " + s);
   assert(!s.contains("17703.0"), msg: "no float widening of an exact count");
 }
 
@@ -25,7 +28,49 @@ float_metrics_stay_floats() `test {
   m["build_seconds"] = MetricValue.Float(50.4);
   GateOutput out = GateOutput.of("darwin/arm64", move m);
   string s = json.encode_string(out)?!;
-  assert(s.contains("50.4"), msg: "a measured duration keeps its fraction");
+  assert(s.contains("\"type\":\"Float\""), msg: "a measured duration says it is one: " + s);
+  assert(s.contains("50.4"), msg: "and keeps its fraction");
+}
+
+a_measured_type_survives_the_wire() `test {
+  map[string, MetricValue] m = map[string, MetricValue]();
+  m["test_count"] = MetricValue.Int(5);
+  m["load_average"] = MetricValue.Float(5.0);
+  GateOutput out = GateOutput.of("linux/amd64", move m);
+  string s = json.encode_string(out)?!;
+  GateOutput back = json.decode_string[GateOutput](s.clone())?!;
+  map[string, MetricValue] read = back.metrics();
+  MetricValue? count = read["test_count"];
+  MetricValue? load = read["load_average"];
+  assert(count is present, msg: "the count came back");
+  assert(load is present, msg: "the load average came back");
+  // Both measure 5. Written bare they would be one number, and whichever the
+  // reader guessed would be right half the time.
+  bool count_is_int = match count! { Int(_) => true, Float(_) => false };
+  bool load_is_float = match load! { Int(_) => false, Float(_) => true };
+  assert(count_is_int, msg: "an exact count is still an int after the round trip");
+  assert(load_is_float, msg: "a float that lands on a whole number is still a float: " + s);
+}
+
+an_envelope_round_trips_whole() `test {
+  map[string, MetricValue] g = map[string, MetricValue]();
+  g["test_count"] = MetricValue.Int(300);
+  GateOutput out = GateOutput.partial("linux/amd64", _metrics(), "wasm suite skipped: no wasmtime on this host")?!;
+  out.with_group(MetricGroup.of("pkg/gate", move g));
+  string s = json.encode_string(out)?!;
+  GateOutput back = json.decode_string[GateOutput](s.clone())?!;
+  assert(back.target == "linux/amd64", msg: "the target survives");
+  assert(back.schema_version == 1, msg: "the wire version survives");
+  assert(!back.complete, msg: "and completeness is derived on the reading side, not carried");
+  string? why = back.incomplete_reason();
+  bool named = false;
+  if why is present {
+    named = why.contains("wasmtime");
+  }
+  assert(named, msg: "the reason survives");
+  MetricGroup[] groups = back.groups();
+  assert(groups.len == 1, msg: "the group survives");
+  assert(groups[0].name == "pkg/gate", msg: "with its name");
 }
 
 groups_carry_per_part_measurements() `test {
@@ -49,7 +94,7 @@ an_envelope_reports_no_verdict() `test {
 a_partial_run_says_so_and_says_why() `test {
   map[string, MetricValue] m = map[string, MetricValue]();
   m["test_count"] = MetricValue.Int(3000);
-  GateOutput out = GateOutput.partial("linux/amd64", move m, "wasm suite skipped: no wasmtime on this host");
+  GateOutput out = GateOutput.partial("linux/amd64", move m, "wasm suite skipped: no wasmtime on this host")?!;
   assert(!out.complete, msg: "an incomplete run is marked");
   string? why = out.incomplete_reason();
   bool named = false;
@@ -58,7 +103,8 @@ a_partial_run_says_so_and_says_why() `test {
   }
   assert(named, msg: "and says why, in the envelope, naming the cause");
   string s = json.encode_string(out)?!;
-  assert(s.contains("\"complete\":false"), msg: "the marker crosses the wire");
+  assert(s.contains("wasmtime"), msg: "the reason crosses the wire");
+  assert(!s.contains("\"complete\""), msg: "carried as the reason alone, so the wire cannot say complete and give a reason not to be: " + s);
 }
 
 a_complete_run_carries_no_reason() `test {
@@ -68,4 +114,45 @@ a_complete_run_carries_no_reason() `test {
   assert(!(why is present), msg: "and has nothing to explain");
   string j = json.encode_string(out)?!;
   assert(!j.contains("incomplete_reason"), msg: "and the key is absent on the wire, not empty: " + j);
+}
+
+an_incomplete_run_with_nothing_to_say_is_refused() `test {
+  bool right_reason = false;
+  GateOutput out = GateOutput.partial("linux/amd64", _metrics(), "") ? e {
+    right_reason = e.message.contains("must say why");
+    GateOutput.of("linux/amd64", _metrics());
+  };
+  assert(right_reason, msg: "completeness is the reason's absence, so a blank one means nothing");
+}
+
+the_wire_is_held_to_the_same_rule() `test {
+  // A derived decode builds the type field by field rather than through a
+  // factory (promise-language/promise#45), so the wire can carry a state the
+  // factories refuse. validate is where a decoded envelope meets that rule.
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[],\"incomplete_reason\":\"\"\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  assert(!back.complete, msg: "decode built an incomplete run with nothing to say");
+  bool right_reason = false;
+  back.validate() ? e {
+    right_reason = e.message.contains("must say why");
+  };
+  assert(right_reason, msg: "and validate refuses it");
+}
+
+a_nameless_envelope_is_refused() `test {
+  string wire = "\{\"schema_version\":1,\"target\":\"\",\"metrics\":\{\},\"groups\":[]\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  bool right_reason = false;
+  back.validate() ? e {
+    right_reason = e.message.contains("no target");
+  };
+  assert(right_reason, msg: "a verdict that speaks for no target speaks for nothing");
+}
+
+a_sound_envelope_validates() `test {
+  GateOutput out = GateOutput.partial("linux/amd64", _metrics(), "wasm suite skipped")?!;
+  string s = json.encode_string(out)?!;
+  GateOutput back = json.decode_string[GateOutput](move s)?!;
+  back.validate()?!;
+  assert(back.target == "linux/amd64", msg: "and a whole one passes through untouched");
 }

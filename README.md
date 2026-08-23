@@ -21,7 +21,7 @@ and each is versioned here so that both sides of the boundary agree on it:
 | **Wire types** | a flow and Reactor | every operation a flow performs, [proxied by its runner](https://github.com/promise-language/reactor/blob/main/docs/base-engineering.md#the-flow-contract) — item reads and annotations, artifact and checkpoint writes, holds, agent runs, gate runs, and proxied VCS |
 | **Feed article** | any component and Reactor | one call on human attention, with its calls to action |
 | **Gate manifest** | a project and Reactor | which gates exist, what each blocks, what each measures |
-| **Gate output envelope** | a gate and Reactor | one gate run's result, as JSON on stdout — measurements and whether the run finished, never a verdict |
+| **Gate output envelope** | a gate and Reactor | one gate run's result, as JSON on stdout — measurements, each carrying the type it was measured in, and the reason it measured less than usual if it did; never a verdict, and never whether the run finished, which malformed JSON already says |
 | **Flow self-description** | a flow and Reactor | item types, eligibility, exclusions, session and arena hints |
 | **Authority config** | a companion repo and Reactor | roles, step grants, the capability vocabulary, read scope |
 | **Arena context** | the runner and the workspace setup tool | the arena's purpose, its paths, and the inputs worktree materialization needs, read over loopback |
