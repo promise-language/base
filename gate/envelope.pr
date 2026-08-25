@@ -48,7 +48,7 @@ type MetricGroup `public `serializable `clone `doc("Measurements for one part of
   get metrics map[string, MetricValue] `public `doc("The measurements, keyed by the names the manifest declared.") => this._metrics.clone();
 }
 
-type GateOutput `public `serializable `doc("One gate run's result. Written as a single JSON object on stdout; human-readable progress belongs on stderr, which Reactor never parses.") {
+type GateOutput `public `serializable `clone `doc("One gate run's result. Written as a single JSON object on stdout; human-readable progress belongs on stderr, which Reactor never parses.") {
   int _schema_version `final `key("schema_version");
   string _target `final `key("target");
   map[string, MetricValue] _metrics `final `key("metrics");

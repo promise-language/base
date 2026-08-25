@@ -1,0 +1,77 @@
+_spec(string move command) GateSpec {
+  VcsTransition[] b = VcsTransition[]();
+  b.push(VcsTransition.Commit);
+  return GateSpec.of("probe", OsCommand.of(move command), none, HostOs[](), none, HostArch[](),
+                     Duration.from_secs(60), move b, none, Exclusion[](), string[](), MetricSpec[]());
+}
+
+an_exec_line_splits_into_program_and_arguments() `test {
+  string[] argv = _argv("bin/gate test --wasm");
+  assert(argv.len == 3, msg: "program plus two arguments");
+  assert(argv[0] == "bin/gate", msg: "the program is the first token");
+  assert(argv[2] == "--wasm", msg: "and flags are arguments, not shell syntax");
+
+  string[] padded = _argv("  bin/gate   test  ");
+  assert(padded.len == 2, msg: "runs of whitespace collapse rather than making empty arguments");
+}
+
+a_run_reports_which_gate_it_was() `test {
+  GateSpec g = _spec("/usr/bin/true ignored args");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.gate == "probe", msg: "the run names its gate");
+  assert(r.exit_code == 0, msg: "and arguments reached exec without a shell in between");
+}
+
+a_gate_that_prints_an_envelope_is_read() `test {
+  GateSpec g = _spec("/bin/echo " + "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\"test_count\":\{\"type\":\"Int\",\"value\":17703\}\},\"groups\":[]\}");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  GateOutput? printed = r.output();
+  assert(printed is present, msg: "the envelope came back");
+  if printed is present {
+    assert(printed.target == "linux/amd64", msg: "with the target it spoke for");
+    assert(printed.complete, msg: "and its completeness derived from the absent reason");
+  }
+}
+
+a_gate_that_prints_nothing_is_not_an_error() `test {
+  // A gate may die before it can measure. The exit code says so; a missing
+  // envelope is absence, not a malformed one.
+  GateSpec g = _spec("/usr/bin/true");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "silence is absent rather than unreadable");
+  assert(r.exit_code == 0, msg: "and the exit code is reported as given");
+}
+
+a_failing_gate_is_a_successful_run() `test {
+  // Running a gate that reports failure is not a failure to run it.
+  GateSpec g = _spec("/usr/bin/false");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.exit_code != 0, msg: "the gate failed and said so through its exit code");
+}
+
+output_that_is_not_an_envelope_is_refused() `test {
+  GateSpec g = _spec("/bin/echo not-json-at-all");
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
+    right_reason = e.message.contains("not an envelope");
+    GateRun.of("probe", 0, none);
+  };
+  assert(right_reason, msg: "a gate printing something else is a contract breach, not a verdict");
+}
+
+a_gate_with_no_command_for_this_host_is_refused() `test {
+  OsOverride[] only_windows = OsOverride[]();
+  only_windows.push(OsOverride.of(HostOs.Windows, "make.cmd"));
+  VcsTransition[] b = VcsTransition[]();
+  b.push(VcsTransition.Commit);
+  GateSpec g = GateSpec.of("winonly", OsCommand.dispatched("", move only_windows), none,
+                           HostOs[](), none, HostArch[](), Duration.from_secs(60), move b, none,
+                           Exclusion[](), string[](), MetricSpec[]());
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
+    right_reason = e.message.contains("declares no command");
+    GateRun.of("winonly", 0, none);
+  };
+  assert(right_reason, msg: "no line for this OS is refused rather than run as empty");
+}

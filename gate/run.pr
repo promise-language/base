@@ -1,0 +1,121 @@
+// run.pr — executing one gate and reading what it reported.
+//
+// A gate is a subprocess that prints an envelope to stdout. This runs it and
+// reads that back; it does not decide anything. The envelope carries
+// measurements and never a verdict, and nothing here invents one — a caller
+// with baselines and thresholds does that, because judging whether a number is
+// acceptable is a different job from obtaining it.
+//
+// **An exec line is exec'd, not interpreted.** `"bin/gate test --wasm"` becomes
+// the program `bin/gate` with arguments `test` and `--wasm`; there is no shell,
+// so no globbing, no pipes, no `&&`, and no substitution. That follows the
+// design rather than convenience: a shell is a capability the arena grants, and
+// a gate comes from the tree, so handing every gate command an implicit shell
+// would give tree-supplied content a reach the design says only the environment
+// hands out. A gate that genuinely needs shell features writes a script and
+// names the script.
+
+use os;
+
+type RunError is error `public `doc("A gate that could not be run, or whose output could not be read.") {
+}
+
+_argv(string line) string[] `doc("Splits an exec line into program and arguments on whitespace. Deliberately not a shell grammar: there is no quoting, because supporting quoting is the first step toward supporting everything else a shell does.") {
+  string[] parts = line.split(" ");
+  string[] argv = string[]();
+  int i = 0;
+  while i < parts.len {
+    string part = parts[i];
+    if !part.is_empty {
+      argv.push(move part);
+    }
+    i = i + 1;
+  }
+  return argv;
+}
+
+type GateRun `public `doc("What one execution of one gate produced. It reports rather than judges: the exit code as the gate gave it, and the envelope if the gate printed a readable one.") {
+  string _gate `final;
+  int _exit_code `final;
+  GateOutput? _output `final;
+
+  of(string move gate, int exit_code, GateOutput? move output) Self `factory `public `doc("A finished run.") {
+    return GateRun(_gate: move gate, _exit_code: exit_code, _output: move output);
+  }
+
+  get gate string `public `doc("The gate's declared name.") => this._gate;
+
+  get exit_code int `public `doc("The process's exit code, unchanged. Reported rather than interpreted — a gate that measures a failure and says so in its envelope has done its job, and whether that exit code means anything is the caller's to decide against what the manifest declared.") => this._exit_code;
+
+  output(this) GateOutput? `public `doc("The envelope the gate printed, absent when it printed nothing readable. Allocates.") {
+    if this._output is present {
+      return this._output!.clone();
+    }
+    return none;
+  }
+}
+
+run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reads its envelope. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. Raises only when the gate could not be run or its output could not be read as an envelope — a gate that ran and reported a failure is a successful run of a failing gate, which is a different thing.") {
+  OsCommand command = spec.command();
+  string line = command.for_os(host);
+  if line.is_empty {
+    raise RunError(message: "gate '" + spec.name + "' declares no command for " + host.to_string());
+  }
+  string[] argv = _argv(line);
+  if argv.len == 0 {
+    raise RunError(message: "gate '" + spec.name + "' declares an empty command line");
+  }
+
+  string program = argv[0];
+  string[] args = string[]();
+  int i = 1;
+  while i < argv.len {
+    string one = argv[i];
+    args.push(move one);
+    i = i + 1;
+  }
+
+  os.Process child = os.Process.spawn(program, args, none, move working_directory)?^;
+  os.ProcessOutput out = child.take_stdout()?^;
+  string printed = _read_all(out)?^;
+  int code = child.wait()?^;
+
+  string name = spec.name;
+  GateOutput? envelope = _envelope(name, move printed)?^;
+  return GateRun.of(move name, code, move envelope);
+}
+
+_envelope!(string gate, string move printed) GateOutput? `doc("Reads what the gate printed, if it printed anything. Silence is absent rather than an error: a gate may fail before it can measure, and the exit code already says so.") {
+  if printed.is_empty {
+    return none;
+  }
+  GateOutput read = json.decode_string[GateOutput](move printed) ? e {
+    raise RunError(message: "gate '" + gate + "' printed output that is not an envelope: " + e.message);
+  };
+  read.validate()?^;
+  return read;
+}
+
+_read_all!(os.ProcessOutput ~pipe) string `doc("Drains a pipe to a string. A gate's envelope is one JSON object and is read whole rather than streamed.") {
+  Builder collected = Builder();
+  u8[] buf = u8[]();
+  int i = 0;
+  while i < 4096 {
+    buf.push(0u8);
+    i = i + 1;
+  }
+  while true {
+    int n = pipe.read(buf)?^;
+    if n <= 0 {
+      break;
+    }
+    u8[] chunk = u8[]();
+    int j = 0;
+    while j < n {
+      chunk.push(buf[j]);
+      j = j + 1;
+    }
+    collected.write_string(string.from_bytes(chunk));
+  }
+  return collected.to_string();
+}
