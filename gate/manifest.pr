@@ -50,16 +50,49 @@ type OsCommand `public `clone `doc("An exec line, optionally dispatched per host
 enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` on the wire; `kind` here, because `type` is a keyword. Declared rather than inferred, and declared even though an envelope states the type of every measurement it carries: the two are a claim and its check, so a run reporting a float where this says int is a mismatch to name rather than a widening to absorb.") {
   Int,
   Float,
+
+  parse!(string move name) MetricType `factory `public `doc("Reads the wire spelling.") {
+    if name == "int" { return MetricType.Int; }
+    if name == "float" { return MetricType.Float; }
+    raise VocabularyError(message: "unknown metric type '" + name + "': expected int or float");
+  }
+
+  to_string(this) string `public `doc("The wire spelling.") => match this {
+    Int => "int",
+    Float => "float",
+  };
 }
 
 enum Direction `public `clone `doc("Which way is better. A ratchet only ever moves this way.") {
   Up,
   Down,
+
+  parse!(string move name) Direction `factory `public `doc("Reads the wire spelling.") {
+    if name == "up" { return Direction.Up; }
+    if name == "down" { return Direction.Down; }
+    raise VocabularyError(message: "unknown direction '" + name + "': expected up or down");
+  }
+
+  to_string(this) string `public `doc("The wire spelling.") => match this {
+    Up => "up",
+    Down => "down",
+  };
 }
 
 enum MetricMode `public `clone `doc("Whether a metric binds. Enforced metrics gate a transition; informational ones are recorded and never block.") {
   Enforced,
   Informational,
+
+  parse!(string move name) MetricMode `factory `public `doc("Reads the wire spelling.") {
+    if name == "enforced" { return MetricMode.Enforced; }
+    if name == "informational" { return MetricMode.Informational; }
+    raise VocabularyError(message: "unknown mode '" + name + "': expected enforced or informational");
+  }
+
+  to_string(this) string `public `doc("The wire spelling.") => match this {
+    Enforced => "enforced",
+    Informational => "informational",
+  };
 }
 
 enum Schedule `public `clone `doc("How often a gate runs as a monitor. Three cadences that cannot be written as one another: a period, an event, and a person. Daily and weekly are periods and are spelled as such — a named preset for a `Duration` a project can already write is a second way to say the same thing, and one whose meaning is undecided besides, since it does not say whether the next run is a day after the last or at a fixed hour. A gate with no schedule is a pure precondition, run only when the transition it blocks is attempted — absence of a cadence, not a cadence named none.") {
@@ -185,7 +218,7 @@ type Manifest `public `doc("Everything a project declares about its gates. React
     int i = 0;
     while i < gates.len {
       // Bound once rather than indexed repeatedly: a method call on an array
-      // index leaks the element copy (promise-language/promise#39).
+      // index leaks the element copy (promise-language/promise#57).
       GateSpec g = gates[i];
       string name = g.name;
       if seen.contains(name) {

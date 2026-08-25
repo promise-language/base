@@ -115,11 +115,13 @@ type Exclusion `public `clone `doc("One named thing a gate must hold alone. The 
     if parts.len < 2 {
       raise VocabularyError(message: "exclusion is not scope:leaf: " + text);
     }
-    ExclusionScope scope = ExclusionScope.parse(parts[0]);
+    string head = parts[0];
+    ExclusionScope scope = ExclusionScope.parse(move head)?^;
     string leaf = parts[1];
     int i = 2;
     while i < parts.len {
-      leaf = leaf + ":" + parts[i];
+      string more = parts[i];
+      leaf = leaf + ":" + more;
       i = i + 1;
     }
     if leaf.is_empty {

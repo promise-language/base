@@ -1,0 +1,140 @@
+_this_project() wire.ProjectId {
+  return wire.ProjectId.parse("https://github.com/promise-language/promise")?!;
+}
+
+_documented_manifest() string {
+  return "\{\n  \"schema_version\": 1,\n  \"project\": \"https://github.com/promise-language/promise\",\n  \"targets\": [\"linux/amd64\", \"linux/arm64\", \"darwin/arm64\", \"windows/amd64\", \"wasm32\"],\n  \"preflight\": \{ \"default\": \"./make\", \"windows\": \".\\\\make.cmd\" \},\n  \"gates\": [\n    \{\n      \"name\": \"promise-tests\",\n      \"command\": \{ \"default\": \"bin/gate test\", \"windows\": \"bin\\\\gate.exe test\" \},\n      \"host_os\": [\"linux\", \"darwin\", \"windows\"],\n      \"host_arch\": [\"amd64\", \"arm64\"],\n      \"timeout\": \"30m\",\n      \"blocks\": [\"push:origin\"],\n      \"schedule\": \"every 4h\",\n      \"serialized_by\": [\"host:cpu\"],\n      \"tags\": [\"tests\", \"host\"],\n      \"metrics\": [\n        \{ \"name\": \"test_count\", \"type\": \"int\", \"direction\": \"up\", \"mode\": \"enforced\", \"cap\": 10000 \},\n        \{ \"name\": \"test_failures\", \"type\": \"int\", \"direction\": \"down\", \"mode\": \"enforced\", \"cap\": 0 \},\n        \{ \"name\": \"excluded_count\", \"type\": \"int\", \"direction\": \"down\", \"mode\": \"informational\" \}\n      ]\n    \},\n    \{\n      \"name\": \"promise-wasm-tests\",\n      \"command\": \"bin/gate test --wasm\",\n      \"host_os\": [\"linux\", \"darwin\"],\n      \"target\": \"wasm32\",\n      \"timeout\": \"20m\",\n      \"blocks\": [\"pr.merge\"],\n      \"tags\": [\"tests\", \"wasm\"],\n      \"metrics\": [\n        \{ \"name\": \"test_failures\", \"type\": \"int\", \"direction\": \"down\", \"mode\": \"enforced\", \"cap\": 0 \}\n      ]\n    \},\n    \{\n      \"name\": \"promise-format\",\n      \"command\": \"bin/gate format\",\n      \"fix\": \"bin/format\",\n      \"host_os\": [\"any\"],\n      \"timeout\": \"2m\",\n      \"blocks\": [\"push:origin\"],\n      \"tags\": [\"format\"],\n      \"metrics\": [\n        \{ \"name\": \"unformatted_files\", \"type\": \"int\", \"direction\": \"down\", \"mode\": \"enforced\", \"cap\": 0 \}\n      ]\n    \}\n  ]\n\}";
+}
+
+the_documented_example_reads() `test {
+  Manifest m = decode_manifest(_documented_manifest(), _this_project())?!;
+  assert(m.schema_version == 1, msg: "wire version");
+  assert(m.targets().len == 5, msg: "five declared targets");
+  GateSpec[] gates = m.gates();
+  assert(gates.len == 3, msg: "three gates");
+
+  GateSpec tests = gates[0];
+  assert(tests.name == "promise-tests", msg: "first gate name");
+  assert(tests.timeout == Duration.from_secs(1800), msg: "30m read as a quantity");
+  assert(tests.command().for_os(HostOs.Windows) == "bin\\gate.exe test", msg: "per-OS override wins");
+  assert(tests.command().for_os(HostOs.Linux) == "bin/gate test", msg: "default otherwise");
+  assert(tests.host_os().len == 3, msg: "three host OSes");
+  assert(tests.host_arch().len == 2, msg: "two arches");
+  assert(tests.blocks().len == 1, msg: "blocks one transition");
+  assert(tests.serialized_by().len == 1, msg: "one exclusion");
+  assert(tests.tags().len == 2, msg: "two tags");
+  assert(tests.metrics().len == 3, msg: "three metrics");
+  Schedule? cadence = tests.schedule();
+  assert(cadence is present, msg: "a monitor cadence");
+
+  GateSpec wasm = gates[1];
+  Target? t = wasm.target();
+  assert(t is present, msg: "the wasm gate speaks for a declared target");
+  assert(wasm.command().for_os(HostOs.Linux) == "bin/gate test --wasm", msg: "a bare string command reads");
+
+  GateSpec fmt = gates[2];
+  OsCommand? fix = fmt.fix();
+  assert(fix is present, msg: "a declared fix is present");
+  Schedule? none_cadence = fmt.schedule();
+  assert(!(none_cadence is present), msg: "and no schedule means a pure precondition");
+}
+
+a_preflight_is_optional_and_os_dispatched() `test {
+  Manifest m = decode_manifest(_documented_manifest(), _this_project())?!;
+  OsCommand? pre = m.preflight();
+  assert(pre is present, msg: "declared preflight");
+  Manifest bare = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"push:origin\"]\}]\}", _this_project())?!;
+  OsCommand? absent = bare.preflight();
+  assert(!(absent is present), msg: "an omitted preflight is absent, not empty");
+}
+
+durations_read_seconds_minutes_and_hours() `test {
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"a\",\"command\":\"c\",\"timeout\":\"45s\",\"blocks\":[\"commit\"]\},\{\"name\":\"b\",\"command\":\"c\",\"timeout\":\"30m\",\"blocks\":[\"commit\"]\},\{\"name\":\"c\",\"command\":\"c\",\"timeout\":\"2h\",\"blocks\":[\"commit\"]\}]\}", _this_project())?!;
+  GateSpec[] g = m.gates();
+  assert(g[0].timeout == Duration.from_secs(45), msg: "seconds");
+  assert(g[1].timeout == Duration.from_secs(1800), msg: "minutes");
+  assert(g[2].timeout == Duration.from_secs(7200), msg: "hours");
+}
+
+the_schedule_grammar_reads() `test {
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"a\",\"command\":\"c\",\"timeout\":\"1m\",\"schedule\":\"every 4h\"\},\{\"name\":\"b\",\"command\":\"c\",\"timeout\":\"1m\",\"schedule\":\"after-every-commit\"\},\{\"name\":\"c\",\"command\":\"c\",\"timeout\":\"1m\",\"schedule\":\"manual\"\}]\}", _this_project())?!;
+  GateSpec[] g = m.gates();
+  Schedule? every = g[0].schedule();
+  assert(every is present, msg: "every <dur> reads");
+  Schedule? commit = g[1].schedule();
+  assert(commit is present, msg: "after-every-commit reads");
+  Schedule? manual = g[2].schedule();
+  assert(manual is present, msg: "manual reads");
+}
+
+an_unknown_major_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":2,\"gates\":[]\}", _this_project()) ? e {
+    right_reason = e.message.contains("schema_version 2");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a newer major is refused rather than half-read");
+}
+
+a_bad_host_os_spelling_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"host_os\":[\"macOS\"]\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("unknown host_os");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "the closed vocabulary refuses a spelling the wire invented");
+}
+
+a_retired_schedule_word_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"schedule\":\"daily\"\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("unknown schedule");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a retired cadence is refused, not silently ignored");
+}
+
+a_bad_duration_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"30 minutes\",\"blocks\":[\"commit\"]\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("not a number followed by a unit");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a duration outside the grammar is refused");
+}
+
+an_undeclared_target_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"targets\":[\"linux/amd64\"],\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"target\":\"wasm32\"\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("does not declare");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "the manifest validator still runs after decode");
+}
+
+a_foreign_project_claim_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"project\":\"https://github.com/someone/else\",\"gates\":[]\}", _this_project()) ? e {
+    right_reason = e.message.contains("but this tree is");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a manifest claiming another project is refused rather than believed");
+}
+
+a_fractional_int_cap_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"metrics\":[\{\"name\":\"n\",\"type\":\"int\",\"direction\":\"up\",\"mode\":\"enforced\",\"cap\":1.5\}]\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("whole number");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a fractional cap on an int metric is refused rather than truncated");
+}
+
+an_inert_gate_survives_the_wire() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\"\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("can never run");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "a gate with neither blocks nor schedule is still refused");
+}

@@ -1,4 +1,3 @@
-use json;
 
 _metrics() map[string, MetricValue] {
   map[string, MetricValue] m = map[string, MetricValue]();

@@ -1,0 +1,346 @@
+// decode.pr — reading a gate manifest off the wire.
+//
+// The manifest is a designed human surface, not a derived encoding. A project
+// author writes `"timeout": "30m"` and `"host_os": ["linux"]`, and `command`
+// is a bare string or an object of per-OS lines. No derivation produces that
+// shape, and a `Duration` field makes a type underivable outright
+// (promise-language/promise#46) — so this is written by hand on purpose.
+//
+// Written by hand is also the safer half. A derived decode constructs a type
+// field by field rather than through a factory, so every rule a factory
+// enforces is skipped on the way in (promise-language/promise#45). Reading
+// through `parse` instead means the closed vocabularies refuse a bad spelling
+// at the same boundary whether the value came from Promise or from JSON.
+//
+// Every temporary is bound to a local before it is consumed, which is why this
+// reads more verbosely than it needs to. A value produced by a call or an index
+// and consumed inline is not freed (promise-language/promise#57) — including
+// the bare auto-propagating call the compiler's own diagnostic recommends, and
+// two of those leaked 300 allocations on one realistic manifest. Parsing still
+// leaks a small bounded amount that this file could not account for; see #57.
+
+use json;
+
+type ManifestError is error `public `doc("A manifest that cannot be read or cannot be accepted.") {
+}
+
+_json_object!(json.JsonValue value, string what) map[string, json.JsonValue] {
+  map[string, json.JsonValue]? fields = value.as_object();
+  if fields is present {
+    return fields;
+  }
+  raise ManifestError(message: what + " must be an object");
+}
+
+_json_string!(json.JsonValue value, string what) string {
+  string? text = value.as_string();
+  if text is present {
+    return text.clone();
+  }
+  raise ManifestError(message: what + " must be a string");
+}
+
+_json_array!(json.JsonValue value, string what) json.JsonValue[] {
+  json.JsonValue[]? items = value.as_array();
+  if items is present {
+    return items;
+  }
+  raise ManifestError(message: what + " must be an array");
+}
+
+_json_int!(json.JsonValue value, string what) int {
+  // JSON has one number type, so an integer arrives as f64 and is checked back
+  // rather than trusted. `as_int` would remove this; there is none today.
+  f64? number = value.as_number();
+  if number is present {
+    int whole = number as int;
+    if (whole as f64) != number {
+      raise ManifestError(message: what + " must be a whole number");
+    }
+    return whole;
+  }
+  raise ManifestError(message: what + " must be a number");
+}
+
+_json_strings!(json.JsonValue value, string what) string[] {
+  json.JsonValue[] items = _json_array(value, what)?^;
+  string[] out = string[]();
+  int i = 0;
+  while i < items.len {
+    json.JsonValue item = items[i];
+    out.push(_json_string(item, what + " entries")?^);
+    i = i + 1;
+  }
+  return out;
+}
+
+_read_duration!(string move text) Duration `doc("Reads `30m`, `2h`, `45s`. Local because the standard library formats a Duration but cannot read one back, and its rendering does not agree with this spelling anyway — 30 minutes renders as `1800s` (promise-language/promise#46). Delete this when a stdlib parse lands.") {
+  string t = text.trim();
+  int unit = 0;
+  if t.ends_with("s") { unit = 1; }
+  if t.ends_with("m") { unit = 60; }
+  if t.ends_with("h") { unit = 3600; }
+  if unit == 0 {
+    raise ManifestError(message: "duration '" + t + "' must end in s, m, or h");
+  }
+  int digits = t.len - 1;
+  if digits < 1 {
+    raise ManifestError(message: "duration '" + t + "' has no number before its unit");
+  }
+  int total = 0;
+  int i = 0;
+  while i < digits {
+    int b = t.byte_at(i) as int;
+    if b < 48 || b > 57 {
+      raise ManifestError(message: "duration '" + t + "' is not a number followed by a unit");
+    }
+    total = total * 10 + (b - 48);
+    i = i + 1;
+  }
+  if total < 1 {
+    raise ManifestError(message: "duration '" + t + "' is not positive");
+  }
+  return Duration.from_secs(total * unit);
+}
+
+_read_schedule!(string move text) Schedule `doc("Reads the cadence grammar: `every <dur>`, `after-every-commit`, `manual`.") {
+  string t = text.trim();
+  if t == "after-every-commit" {
+    return Schedule.AfterEveryCommit;
+  }
+  if t == "manual" {
+    return Schedule.Manual;
+  }
+  string[] parts = t.split(" ");
+  if parts.len == 2 {
+    string head = parts[0];
+    if head == "every" {
+      string span = parts[1];
+      return Schedule.Every(_read_duration(move span)?^);
+    }
+  }
+  raise ManifestError(message: "unknown schedule '" + t + "': expected 'every <duration>', 'after-every-commit', or 'manual'");
+}
+
+_read_os_command!(json.JsonValue value, string what) OsCommand `doc("Reads a command in either spelling: a bare string used on every OS, or an object keyed by `default` and host-OS names. The OS keys go through HostOs.parse, so a misspelling is refused here rather than silently never matching a host.") {
+  string? bare = value.as_string();
+  if bare is present {
+    return OsCommand.of(bare.clone());
+  }
+  map[string, json.JsonValue] fields = _json_object(value, what)?^;
+  string fallback = "";
+  OsOverride[] overrides = OsOverride[]();
+  for key, line in fields {
+    string text = _json_string(line, what + "." + key)?^;
+    if key == "default" {
+      fallback = text.clone();
+    } else {
+      overrides.push(OsOverride.of(HostOs.parse(key.clone())?^, move text));
+    }
+  }
+  if fallback.is_empty && overrides.len == 0 {
+    raise ManifestError(message: what + " declares no command line");
+  }
+  return OsCommand.dispatched(move fallback, move overrides);
+}
+
+_read_metric!(json.JsonValue value) MetricSpec {
+  map[string, json.JsonValue] fields = _json_object(value, "a metric")?^;
+  if !fields.contains("name") {
+    raise ManifestError(message: "a metric declares no name");
+  }
+  json.JsonValue _f_name = fields["name"]!;
+  string name = _json_string(_f_name, "a metric's name")?^;
+  string where = "metric '" + name + "'";
+  if !fields.contains("type") || !fields.contains("direction") || !fields.contains("mode") {
+    raise ManifestError(message: where + " must declare type, direction, and mode");
+  }
+  json.JsonValue _f_type = fields["type"]!;
+  MetricType kind = MetricType.parse(_json_string(_f_type, where + " type")?^)?^;
+  json.JsonValue _f_direction = fields["direction"]!;
+  Direction direction = Direction.parse(_json_string(_f_direction, where + " direction")?^)?^;
+  json.JsonValue _f_mode = fields["mode"]!;
+  MetricMode mode = MetricMode.parse(_json_string(_f_mode, where + " mode")?^)?^;
+  if !fields.contains("cap") {
+    return MetricSpec.of(move name, move kind, move direction, move mode);
+  }
+  json.JsonValue cap = fields["cap"]!;
+  MetricValue bound = MetricValue.Int(0);
+  if kind.to_string() == "int" {
+    bound = MetricValue.Int(_json_int(cap, where + " cap")?^);
+  } else {
+    f64? number = cap.as_number();
+    if number is present {
+      bound = MetricValue.Float(number);
+    } else {
+      raise ManifestError(message: where + " cap must be a number");
+    }
+  }
+  return MetricSpec.capped(move name, move kind, move direction, move mode, move bound);
+}
+
+_read_gate!(json.JsonValue value) GateSpec {
+  map[string, json.JsonValue] fields = _json_object(value, "a gate")?^;
+  if !fields.contains("name") {
+    raise ManifestError(message: "a gate declares no name");
+  }
+  json.JsonValue _f_name = fields["name"]!;
+  string name = _json_string(_f_name, "a gate's name")?^;
+  string where = "gate '" + name + "'";
+  if !fields.contains("command") {
+    raise ManifestError(message: where + " declares no command");
+  }
+  json.JsonValue _f_command = fields["command"]!;
+  OsCommand command = _read_os_command(_f_command, where + " command")?^;
+
+  OsCommand? fix = none;
+  if fields.contains("fix") {
+    json.JsonValue _f_fix = fields["fix"]!;
+    fix = _read_os_command(_f_fix, where + " fix")?^;
+  }
+
+  HostOs[] host_os = HostOs[]();
+  if fields.contains("host_os") {
+    json.JsonValue _f_host_os = fields["host_os"]!;
+    string[] host_os_names = _json_strings(_f_host_os, where + " host_os")?^;
+    int i = 0;
+    while i < host_os_names.len {
+      string spelling = host_os_names[i];
+      host_os.push(HostOs.parse(move spelling)?^);
+      i = i + 1;
+    }
+  }
+
+  HostArch[] host_arch = HostArch[]();
+  if fields.contains("host_arch") {
+    json.JsonValue _f_host_arch = fields["host_arch"]!;
+    string[] host_arch_names = _json_strings(_f_host_arch, where + " host_arch")?^;
+    int i = 0;
+    while i < host_arch_names.len {
+      string spelling = host_arch_names[i];
+      host_arch.push(HostArch.parse(move spelling)?^);
+      i = i + 1;
+    }
+  }
+
+  Target? target = none;
+  if fields.contains("target") {
+    json.JsonValue _f_target = fields["target"]!;
+    target = Target.parse(_json_string(_f_target, where + " target")?^)?^;
+  }
+
+  if !fields.contains("timeout") {
+    raise ManifestError(message: where + " declares no timeout");
+  }
+  json.JsonValue _f_timeout = fields["timeout"]!;
+  Duration timeout = _read_duration(_json_string(_f_timeout, where + " timeout")?^)?^;
+
+  VcsTransition[] blocks = VcsTransition[]();
+  if fields.contains("blocks") {
+    json.JsonValue _f_blocks = fields["blocks"]!;
+    string[] blocks_names = _json_strings(_f_blocks, where + " blocks")?^;
+    int i = 0;
+    while i < blocks_names.len {
+      string spelling = blocks_names[i];
+      blocks.push(VcsTransition.parse(move spelling)?^);
+      i = i + 1;
+    }
+  }
+
+  Schedule? schedule = none;
+  if fields.contains("schedule") {
+    json.JsonValue _f_schedule = fields["schedule"]!;
+    schedule = _read_schedule(_json_string(_f_schedule, where + " schedule")?^)?^;
+  }
+
+  Exclusion[] serialized_by = Exclusion[]();
+  if fields.contains("serialized_by") {
+    json.JsonValue _f_serialized_by = fields["serialized_by"]!;
+    string[] serialized_by_names = _json_strings(_f_serialized_by, where + " serialized_by")?^;
+    int i = 0;
+    while i < serialized_by_names.len {
+      string spelling = serialized_by_names[i];
+      serialized_by.push(Exclusion.parse(move spelling)?^);
+      i = i + 1;
+    }
+  }
+
+  string[] tags = string[]();
+  if fields.contains("tags") {
+    json.JsonValue _f_tags = fields["tags"]!;
+    tags = _json_strings(_f_tags, where + " tags")?^;
+  }
+
+  MetricSpec[] metrics = MetricSpec[]();
+  if fields.contains("metrics") {
+    json.JsonValue _f_metrics = fields["metrics"]!;
+    json.JsonValue[] specs = _json_array(_f_metrics, where + " metrics")?^;
+    int i = 0;
+    while i < specs.len {
+      json.JsonValue spec = specs[i];
+      metrics.push(_read_metric(spec)?^);
+      i = i + 1;
+    }
+  }
+
+  return GateSpec.of(move name, move command, move fix, move host_os, move target,
+                     move host_arch, timeout, move blocks, move schedule,
+                     move serialized_by, move tags, move metrics);
+}
+
+decode_manifest!(string move text, wire.ProjectId move project) Manifest `public `doc("Reads a manifest from the JSON a project's `bin/gate list --json` prints. The project is supplied by the caller rather than trusted from the document: Reactor knows which project it checked out, and a manifest naming a different one is refused by Manifest.of rather than believed.") {
+  json.JsonValue root = json.parse_value(move text)?^;
+  map[string, json.JsonValue] fields = _json_object(root, "a manifest")?^;
+
+  if !fields.contains("schema_version") {
+    raise ManifestError(message: "a manifest declares no schema_version");
+  }
+  json.JsonValue _f_schema_version = fields["schema_version"]!;
+  int version = _json_int(_f_schema_version, "schema_version")?^;
+  if version != 1 {
+    raise ManifestError(message: "unsupported manifest schema_version " + version.to_string() + ": this build reads 1");
+  }
+
+  // The document's own claim of which project it belongs to is checked, not
+  // taken. Reactor knows the project from the worktree it checked out; a
+  // manifest naming a different one is a tree that is not what it says it is.
+  if fields.contains("project") {
+    json.JsonValue _f_project = fields["project"]!;
+    wire.ProjectId claimed = wire.ProjectId.parse(_json_string(_f_project, "project")?^)?^;
+    if !(claimed == project) {
+      raise ManifestError(message: "manifest claims project " + claimed.to_string() + " but this tree is " + project.to_string());
+    }
+  }
+
+  Target[] targets = Target[]();
+  if fields.contains("targets") {
+    json.JsonValue _f_targets = fields["targets"]!;
+    string[] names = _json_strings(_f_targets, "targets")?^;
+    int i = 0;
+    while i < names.len {
+      string spelling = names[i];
+      targets.push(Target.parse(move spelling)?^);
+      i = i + 1;
+    }
+  }
+
+  OsCommand? preflight = none;
+  if fields.contains("preflight") {
+    json.JsonValue _f_preflight = fields["preflight"]!;
+    preflight = _read_os_command(_f_preflight, "preflight")?^;
+  }
+
+  GateSpec[] gates = GateSpec[]();
+  if fields.contains("gates") {
+    json.JsonValue _f_gates = fields["gates"]!;
+    json.JsonValue[] declared = _json_array(_f_gates, "gates")?^;
+    int i = 0;
+    while i < declared.len {
+      json.JsonValue one = declared[i];
+      gates.push(_read_gate(one)?^);
+      i = i + 1;
+    }
+  }
+
+  return Manifest.of(move project, move targets, move preflight, move gates)?^;
+}
