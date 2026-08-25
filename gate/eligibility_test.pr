@@ -1,0 +1,39 @@
+_only(string move json_text) GateSpec {
+  // Bound rather than passed inline: a temporary consumed in a call argument is
+  // not freed (promise-language/promise#57).
+  wire.ProjectId p = wire.ProjectId.parse("https://github.com/x/y")?!;
+  Manifest m = decode_manifest(move json_text, move p)?!;
+  GateSpec[] gates = m.gates();
+  return gates[0];
+}
+
+a_named_os_filters() `test {
+  GateSpec g = _only("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"host_os\":[\"linux\"]\}]\}");
+  assert(g.eligible_on(HostOs.Linux, HostArch.Amd64), msg: "runs on the OS it names");
+  assert(!g.eligible_on(HostOs.Darwin, HostArch.Amd64), msg: "and not on one it does not");
+}
+
+b_any_matches_every_host() `test {
+  GateSpec g = _only("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"host_os\":[\"any\"]\}]\}");
+  assert(g.eligible_on(HostOs.Linux, HostArch.Amd64), msg: "any covers linux");
+  assert(g.eligible_on(HostOs.Windows, HostArch.Arm64), msg: "and windows");
+}
+
+c_an_omitted_filter_is_any() `test {
+  GateSpec g = _only("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"]\}]\}");
+  assert(g.eligible_on(HostOs.Darwin, HostArch.Arm64), msg: "no OS named means any, not none");
+}
+
+d_arch_narrows_within_an_os() `test {
+  GateSpec g = _only("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"host_os\":[\"linux\"],\"host_arch\":[\"arm64\"]\}]\}");
+  assert(g.eligible_on(HostOs.Linux, HostArch.Arm64), msg: "the arch it names");
+  assert(!g.eligible_on(HostOs.Linux, HostArch.Amd64), msg: "not the one it does not");
+  assert(!g.eligible_on(HostOs.Darwin, HostArch.Arm64), msg: "and the OS still has to match");
+}
+
+e_several_declared_oses() `test {
+  GateSpec g = _only("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"host_os\":[\"linux\",\"darwin\"]\}]\}");
+  assert(g.eligible_on(HostOs.Linux, HostArch.Amd64), msg: "first");
+  assert(g.eligible_on(HostOs.Darwin, HostArch.Arm64), msg: "second");
+  assert(!g.eligible_on(HostOs.Windows, HostArch.Amd64), msg: "not a third it never named");
+}

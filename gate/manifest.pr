@@ -205,6 +205,35 @@ type GateSpec `public `doc("One gate a project declares. Every field is the proj
                     _metrics: this._metrics.clone());
   }
 
+  eligible_on(this, HostOs os, HostArch arch) bool `public `doc("Whether this gate may run on a host of this shape. An empty filter means any, on both axes: the manifest states arch as optional outright, and a gate naming no OS is read the same way rather than as one that runs nowhere. Eligibility is a filter, never a verdict — a gate that cannot run here has not passed or failed, it has not spoken.") {
+    if this._host_os.len > 0 {
+      bool os_ok = false;
+      int i = 0;
+      while i < this._host_os.len {
+        HostOs declared = this._host_os[i];
+        if declared.matches(os) {
+          os_ok = true;
+        }
+        i = i + 1;
+      }
+      if !os_ok {
+        return false;
+      }
+    }
+    if this._host_arch.len == 0 {
+      return true;
+    }
+    int j = 0;
+    while j < this._host_arch.len {
+      HostArch declared = this._host_arch[j];
+      if declared.to_string() == arch.to_string() {
+        return true;
+      }
+      j = j + 1;
+    }
+    return false;
+  }
+
   get runs_at_all bool `public `doc("Whether this gate can ever run. A gate declaring neither a transition to block nor a cadence to run on is inert, and a manifest carrying one is rejected rather than left to sit.") => this._blocks.len > 0 || this._schedule is present;
 }
 
