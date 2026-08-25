@@ -135,7 +135,7 @@ _read_os_command!(json.JsonValue value, string what) OsCommand `doc("Reads a com
     if key == "default" {
       fallback = text.clone();
     } else {
-      overrides.push(OsOverride.of(HostOs.parse(key.clone())?^, move text));
+      overrides.push(OsOverride.of(scan[HostOs](key.clone())?^, move text));
     }
   }
   if fallback.is_empty && overrides.len == 0 {
@@ -156,11 +156,11 @@ _read_metric!(json.JsonValue value) MetricSpec {
     raise ManifestError(message: where + " must declare type, direction, and mode");
   }
   json.JsonValue _f_type = fields["type"]!;
-  MetricType kind = MetricType.parse(_json_string(_f_type, where + " type")?^)?^;
+  MetricType kind = scan[MetricType](_json_string(_f_type, where + " type")?^)?^;
   json.JsonValue _f_direction = fields["direction"]!;
-  Direction direction = Direction.parse(_json_string(_f_direction, where + " direction")?^)?^;
+  Direction direction = scan[Direction](_json_string(_f_direction, where + " direction")?^)?^;
   json.JsonValue _f_mode = fields["mode"]!;
-  MetricMode mode = MetricMode.parse(_json_string(_f_mode, where + " mode")?^)?^;
+  MetricMode mode = scan[MetricMode](_json_string(_f_mode, where + " mode")?^)?^;
   if !fields.contains("cap") {
     return MetricSpec.of(move name, move kind, move direction, move mode);
   }
@@ -206,7 +206,7 @@ _read_gate!(json.JsonValue value) GateSpec {
     int i = 0;
     while i < host_os_names.len {
       string spelling = host_os_names[i];
-      host_os.push(HostOs.parse(move spelling)?^);
+      host_os.push(scan[HostOs](spelling)?^);
       i = i + 1;
     }
   }
@@ -218,7 +218,7 @@ _read_gate!(json.JsonValue value) GateSpec {
     int i = 0;
     while i < host_arch_names.len {
       string spelling = host_arch_names[i];
-      host_arch.push(HostArch.parse(move spelling)?^);
+      host_arch.push(scan[HostArch](spelling)?^);
       i = i + 1;
     }
   }
@@ -226,7 +226,7 @@ _read_gate!(json.JsonValue value) GateSpec {
   Target? target = none;
   if fields.contains("target") {
     json.JsonValue _f_target = fields["target"]!;
-    target = Target.parse(_json_string(_f_target, where + " target")?^)?^;
+    target = scan[Target](_json_string(_f_target, where + " target")?^)?^;
   }
 
   if !fields.contains("timeout") {
@@ -242,7 +242,7 @@ _read_gate!(json.JsonValue value) GateSpec {
     int i = 0;
     while i < blocks_names.len {
       string spelling = blocks_names[i];
-      blocks.push(VcsTransition.parse(move spelling)?^);
+      blocks.push(scan[VcsTransition](spelling)?^);
       i = i + 1;
     }
   }
@@ -260,7 +260,7 @@ _read_gate!(json.JsonValue value) GateSpec {
     int i = 0;
     while i < serialized_by_names.len {
       string spelling = serialized_by_names[i];
-      serialized_by.push(Exclusion.parse(move spelling)?^);
+      serialized_by.push(scan[Exclusion](spelling)?^);
       i = i + 1;
     }
   }
@@ -319,7 +319,7 @@ decode_manifest!(string move text, wire.ProjectId move project) Manifest `public
     int i = 0;
     while i < names.len {
       string spelling = names[i];
-      targets.push(Target.parse(move spelling)?^);
+      targets.push(scan[Target](spelling)?^);
       i = i + 1;
     }
   }

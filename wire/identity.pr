@@ -4,8 +4,15 @@
 // gate names. A lease holder and an arena id are Reactor's and its runner's, one
 // owner on both ends, so they stay there.
 
+// `parse` here takes a string rather than the `Reader` that `std.Parse` declares,
+// and so does not conform to that interface. It is not a preference: a factory
+// whose parameter is a structural interface is not reachable across a module
+// boundary at all (promise-language/promise#58), and these types exist to be
+// consumed by other modules. `format` is already the conforming shape, so the
+// pair converges the moment #58 lands.
 type IdentityError is error `public `doc("A reference that cannot be accepted as an identity.") {
 }
+
 
 type ProjectId `public `clone `doc("A project's identity: the canonical URL of its repository. The host selects the identity adapter, and canonicalization is that adapter's job, so this type holds an already-canonical value.") {
   string _url `final;
@@ -13,6 +20,7 @@ type ProjectId `public `clone `doc("A project's identity: the canonical URL of i
   of(string move canonical_url) Self `factory `public `doc("Wraps a URL the adapter has already canonicalized. Callers holding an unvalidated string use parse instead.") {
     return ProjectId(_url: move canonical_url);
   }
+
 
   parse!(string move url) Self `factory `public `doc("Applies the floor every adapter must satisfy: the reference is an absolute URL with a scheme and a host, and carries no embedded password. Host-specific canonicalization — whether an ssh and an https form name one repository, whether a trailing .git matters — is the adapter's and is not attempted here.") {
     if url.contains(" ") || url.contains("\t") {
@@ -50,6 +58,10 @@ type ProjectId `public `clone `doc("A project's identity: the canonical URL of i
 
   get url string `public `doc("The canonical repository URL.") => this._url;
 
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this._url);
+  }
+
   to_string(this) string `public `doc("The canonical repository URL, unchanged.") => this._url;
 
   == (ProjectId other) bool `public `doc("Two projects are the same when their canonical URLs are.") => this._url == other._url;
@@ -65,6 +77,7 @@ type ItemId `public `clone `doc("An item's identity: its project, plus the id it
 
   get project ProjectId `public `doc("The project owning this item.") => this._project.clone();
 
+
   parse!(string move reference) Self `factory `public `doc("Reads the reference form back: a project URL, a hash, and the local id. The project half goes through the same floor as ProjectId.parse.") {
     string[] halves = reference.split("#");
     if halves.len != 2 {
@@ -73,10 +86,19 @@ type ItemId `public `clone `doc("An item's identity: its project, plus the id it
     if halves[1].is_empty {
       raise IdentityError(message: "item reference has no local id: " + reference);
     }
-    return ItemId(_project: ProjectId.parse(halves[0]), _local: halves[1]);
+    string project_half = halves[0];
+    string local = halves[1];
+    ProjectId project = ProjectId.parse(move project_half)?^;
+    return ItemId(_project: move project, _local: move local);
   }
 
   get local string `public `doc("The id this item's authority assigned, unique within its project.") => this._local;
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this._project.url);
+    w.write_string("#");
+    w.write_string(this._local);
+  }
 
   to_string(this) string `public `doc("The reference form: the project URL, a hash, and the local id.") {
     return this._project.url + "#" + this._local;
@@ -94,6 +116,7 @@ type StepName `public `clone `doc("A step's name, as the flow's describe output 
     return StepName(_name: move name);
   }
 
+
   parse!(string move name) Self `factory `public `doc("Rejects a name that cannot identify a step.") {
     if name.is_empty {
       raise IdentityError(message: "step name is empty");
@@ -102,6 +125,10 @@ type StepName `public `clone `doc("A step's name, as the flow's describe output 
   }
 
   get name string `public `doc("The declared name.") => this._name;
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this._name);
+  }
 
   to_string(this) string `public `doc("The declared name, unchanged.") => this._name;
 
@@ -117,6 +144,10 @@ type StepRunId `public `clone `doc("One dispatch of one step: the grain at which
 
   get value string `public `doc("The opaque minted value.") => this._value;
 
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this._value);
+  }
+
   to_string(this) string `public `doc("The opaque minted value, unchanged.") => this._value;
 
   == (StepRunId other) bool `public `doc("Minted ids match exactly or not at all.") => this._value == other._value;
@@ -131,6 +162,10 @@ type QuestionId `public `clone `doc("A question raised against an item. Minted b
 
   get value string `public `doc("The opaque minted value.") => this._value;
 
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this._value);
+  }
+
   to_string(this) string `public `doc("The opaque minted value, unchanged.") => this._value;
 
   == (QuestionId other) bool `public `doc("Minted ids match exactly or not at all.") => this._value == other._value;
@@ -143,6 +178,7 @@ type ArticleKey `public `clone `doc("A feed article's durable identity, chosen b
     return ArticleKey(_key: move key);
   }
 
+
   parse!(string move key) Self `factory `public `doc("Rejects a key that cannot identify an article.") {
     if key.is_empty {
       raise IdentityError(message: "article key is empty");
@@ -151,6 +187,10 @@ type ArticleKey `public `clone `doc("A feed article's durable identity, chosen b
   }
 
   get key string `public `doc("The namespaced key.") => this._key;
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this._key);
+  }
 
   to_string(this) string `public `doc("The namespaced key, unchanged.") => this._key;
 

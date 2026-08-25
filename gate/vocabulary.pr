@@ -10,6 +10,29 @@
 // values already written down, which breaks everything holding them — and the
 // wire evolves additively, so there is no version in which that becomes safe.
 
+// These types carry the canonical `Parse`/`Format` pair — `parse!(Reader ~r)` and
+// `format!(Writer ~w)` — so they will satisfy the interfaces without change when
+// the structural work lands. They are not declared `is Parse` yet, because that
+// is what the work fixes.
+//
+// One caveat, and it is not this module's to fix. A factory taking a structural
+// interface is unreachable across a module boundary (promise-language/promise#58),
+// so these parse methods work inside `gate` and will not work from Reactor until
+// that lands. `wire` hit it first and had to keep a string parameter; see the note
+// there. Nothing consumes `gate` yet, which is the only reason it can hold the
+// correct shape today.
+//
+// Every spelling here is one whole token, so parse reads the reader to its end.
+// Local because `Reader` declares no drain of its own — `Scanner.rest` is on the
+// concrete type, not the interface.
+_drain!(Reader ~r) string {
+  u8[] buf = u8[]();
+  while b := r.read_byte() {
+    buf.push(b);
+  }
+  return string.from_bytes(buf);
+}
+
 type VocabularyError is error `public `doc("A value outside the closed set it had to come from.") {
 }
 
@@ -19,12 +42,17 @@ enum HostOs `public `clone `doc("An operating system a gate may run on. `Any` is
   Windows,
   Any,
 
-  parse!(string move name) HostOs `factory `public `doc("Reads the wire spelling. Strict rather than forgiving: `macOS` is a mistake worth a message, not a spelling to quietly accept, because accepting it puts two spellings of one OS into circulation.") {
+  parse!(Reader ~r) HostOs `factory `public `doc("Reads the wire spelling. Strict rather than forgiving: `macOS` is a mistake worth a message, not a spelling to quietly accept, because accepting it puts two spellings of one OS into circulation.") {
+    string name = _drain(r)?^;
     if name == "linux" { return HostOs.Linux; }
     if name == "darwin" { return HostOs.Darwin; }
     if name == "windows" { return HostOs.Windows; }
     if name == "any" { return HostOs.Any; }
     raise VocabularyError(message: "unknown host_os '" + name + "': expected linux, darwin, windows, or any");
+  }
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back. to_string carries the same text but is a rendering, not a contract.") {
+    w.write_string(this.to_string());
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {
@@ -44,10 +72,15 @@ enum HostArch `public `clone `doc("A machine architecture a gate may be filtered
   Amd64,
   Arm64,
 
-  parse!(string move name) HostArch `factory `public `doc("Reads the wire spelling.") {
+  parse!(Reader ~r) HostArch `factory `public `doc("Reads the wire spelling.") {
+    string name = _drain(r)?^;
     if name == "amd64" { return HostArch.Amd64; }
     if name == "arm64" { return HostArch.Arm64; }
     raise VocabularyError(message: "unknown host_arch '" + name + "': expected amd64 or arm64");
+  }
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back. to_string carries the same text but is a rendering, not a contract.") {
+    w.write_string(this.to_string());
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {
@@ -64,7 +97,8 @@ enum VcsTransition `public `clone `doc("A transition a gate can be a preconditio
   PrCreate,
   PrMerge,
 
-  parse!(string move name) VcsTransition `factory `public `doc("Reads the wire spelling.") {
+  parse!(Reader ~r) VcsTransition `factory `public `doc("Reads the wire spelling.") {
+    string name = _drain(r)?^;
     if name == "commit" { return VcsTransition.Commit; }
     if name == "branch.create" { return VcsTransition.BranchCreate; }
     if name == "push:branch:own" { return VcsTransition.PushBranchOwn; }
@@ -72,6 +106,10 @@ enum VcsTransition `public `clone `doc("A transition a gate can be a preconditio
     if name == "pr.create" { return VcsTransition.PrCreate; }
     if name == "pr.merge" { return VcsTransition.PrMerge; }
     raise VocabularyError(message: "unknown blocks entry '" + name + "': expected commit, branch.create, push:branch:own, push:origin, pr.create, or pr.merge");
+  }
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back. to_string carries the same text but is a rendering, not a contract.") {
+    w.write_string(this.to_string());
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {
@@ -90,12 +128,17 @@ enum ExclusionScope `public `clone `doc("What an exclusion contends over. Closed
   Arena,
   Global,
 
-  parse!(string move name) ExclusionScope `factory `public `doc("Reads the wire spelling.") {
+  parse!(Reader ~r) ExclusionScope `factory `public `doc("Reads the wire spelling.") {
+    string name = _drain(r)?^;
     if name == "project" { return ExclusionScope.Project; }
     if name == "host" { return ExclusionScope.Host; }
     if name == "arena" { return ExclusionScope.Arena; }
     if name == "global" { return ExclusionScope.Global; }
     raise VocabularyError(message: "unknown exclusion scope '" + name + "': expected project, host, arena, or global");
+  }
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back. to_string carries the same text but is a rendering, not a contract.") {
+    w.write_string(this.to_string());
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {
@@ -110,13 +153,14 @@ type Exclusion `public `clone `doc("One named thing a gate must hold alone. The 
   ExclusionScope _scope `final;
   string _leaf `final;
 
-  parse!(string move text) Self `factory `public `doc("Reads `scope:leaf`. Only the first colon separates — a leaf may contain its own, so `project:migration:v2` is one leaf under one scope.") {
+  parse!(Reader ~r) Self `factory `public `doc("Reads `scope:leaf`. Only the first colon separates — a leaf may contain its own, so `project:migration:v2` is one leaf under one scope.") {
+    string text = _drain(r)?^;
     string[] parts = text.split(":");
     if parts.len < 2 {
       raise VocabularyError(message: "exclusion is not scope:leaf: " + text);
     }
     string head = parts[0];
-    ExclusionScope scope = ExclusionScope.parse(move head)?^;
+    ExclusionScope scope = scan[ExclusionScope](head)?^;
     string leaf = parts[1];
     int i = 2;
     while i < parts.len {
@@ -132,13 +176,18 @@ type Exclusion `public `clone `doc("One named thing a gate must hold alone. The 
 
   get scope ExclusionScope `public `doc("What this exclusion contends over.") => this._scope;
   get leaf string `public `doc("The opaque name within that scope.") => this._leaf;
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back. to_string carries the same text but is a rendering, not a contract.") {
+    w.write_string(this.to_string());
+  }
+
   to_string(this) string `public `doc("The wire spelling.") => this._scope.to_string() + ":" + this._leaf;
 }
 
 type Target `public `clone `doc("Something the project builds for — one entry in what invariant 1 means by \"every platform\". Open on purpose: a project declares its own set, and there is no universal shape to check, since `wasm32` and `linux/amd64` are both legitimate. Reactor never interprets a target; it matches and groups, so the set is closed per manifest rather than by this layer.") {
   string _name `final;
 
-  parse!(string move name) Self `factory `public `doc("Rejects a name that cannot identify a target. The shape is the project's business; being a usable name is not.") {
+  parse!(Reader ~r) Self `factory `public `doc("Rejects a name that cannot identify a target. The shape is the project's business; being a usable name is not.") {
+    string name = _drain(r)?^;
     if name.is_empty {
       raise VocabularyError(message: "target name is empty");
     }
@@ -149,6 +198,10 @@ type Target `public `clone `doc("Something the project builds for — one entry 
   }
 
   get name string `public `doc("The declared name.") => this._name;
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back. to_string carries the same text but is a rendering, not a contract.") {
+    w.write_string(this.to_string());
+  }
+
   to_string(this) string `public `doc("The declared name, unchanged.") => this._name;
   == (Target other) bool `public `doc("Two targets match when their names do.") => this._name == other._name;
 }

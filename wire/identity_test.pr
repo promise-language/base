@@ -111,3 +111,31 @@ item_clone_is_independent() `test {
   ItemId b = a.clone();
   assert(b == a, msg: "a clone equals its original");
 }
+
+format_and_parse_round_trip() `test {
+  // The pair is the contract: whatever format writes, parse must read back as
+  // the same value. to_string is a human rendering and is not part of it.
+  ProjectId p = ProjectId.parse("https://github.com/promise-language/reactor")?!;
+  Builder pb = Builder();
+  p.format(pb)?!;
+  ProjectId p_back = ProjectId.parse(pb.to_string())?!;
+  assert(p_back == p, msg: "a project id survives format then parse");
+
+  ItemId i = ItemId.parse("https://github.com/promise-language/reactor#481")?!;
+  Builder ib = Builder();
+  i.format(ib)?!;
+  ItemId i_back = ItemId.parse(ib.to_string())?!;
+  assert(i_back == i, msg: "an item id survives format then parse");
+
+  StepName s = StepName.parse("plan")?!;
+  Builder sb = Builder();
+  s.format(sb)?!;
+  StepName s_back = StepName.parse(sb.to_string())?!;
+  assert(s_back == s, msg: "a step name survives format then parse");
+
+  ArticleKey k = ArticleKey.parse("gate:red:promise-tests")?!;
+  Builder kb = Builder();
+  k.format(kb)?!;
+  ArticleKey k_back = ArticleKey.parse(kb.to_string())?!;
+  assert(k_back == k, msg: "an article key survives format then parse");
+}

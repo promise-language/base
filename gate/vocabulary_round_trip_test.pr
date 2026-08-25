@@ -1,0 +1,33 @@
+format_and_parse_round_trip() `test {
+  // The pair is the contract: what format writes, parse reads back as the same
+  // value. to_string carries the same text but is a rendering, not the contract.
+  HostOs os = scan[HostOs]("darwin")?!;
+  Builder ob = Builder();
+  os.format(ob)?!;
+  HostOs os_back = scan[HostOs](ob.to_string())?!;
+  assert(os_back.to_string() == os.to_string(), msg: "a host OS survives format then parse");
+
+  VcsTransition t = scan[VcsTransition]("push:origin")?!;
+  Builder tb = Builder();
+  t.format(tb)?!;
+  VcsTransition t_back = scan[VcsTransition](tb.to_string())?!;
+  assert(t_back.to_string() == t.to_string(), msg: "a transition survives format then parse");
+
+  Exclusion x = scan[Exclusion]("project:migration:v2")?!;
+  Builder xb = Builder();
+  x.format(xb)?!;
+  Exclusion x_back = scan[Exclusion](xb.to_string())?!;
+  assert(x_back.to_string() == x.to_string(), msg: "an exclusion with a colon in its leaf survives the round trip");
+
+  Target g = scan[Target]("linux/amd64")?!;
+  Builder gb = Builder();
+  g.format(gb)?!;
+  Target g_back = scan[Target](gb.to_string())?!;
+  assert(g_back == g, msg: "a target survives format then parse");
+
+  MetricType k = scan[MetricType]("float")?!;
+  Builder kb = Builder();
+  k.format(kb)?!;
+  MetricType k_back = scan[MetricType](kb.to_string())?!;
+  assert(k_back.to_string() == k.to_string(), msg: "a metric type survives format then parse");
+}

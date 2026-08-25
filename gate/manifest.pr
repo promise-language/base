@@ -51,10 +51,15 @@ enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` o
   Int,
   Float,
 
-  parse!(string move name) MetricType `factory `public `doc("Reads the wire spelling.") {
+  parse!(Reader ~r) MetricType `factory `public `doc("Reads the wire spelling.") {
+    string name = _drain(r)?^;
     if name == "int" { return MetricType.Int; }
     if name == "float" { return MetricType.Float; }
     raise VocabularyError(message: "unknown metric type '" + name + "': expected int or float");
+  }
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this.to_string());
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {
@@ -67,10 +72,15 @@ enum Direction `public `clone `doc("Which way is better. A ratchet only ever mov
   Up,
   Down,
 
-  parse!(string move name) Direction `factory `public `doc("Reads the wire spelling.") {
+  parse!(Reader ~r) Direction `factory `public `doc("Reads the wire spelling.") {
+    string name = _drain(r)?^;
     if name == "up" { return Direction.Up; }
     if name == "down" { return Direction.Down; }
     raise VocabularyError(message: "unknown direction '" + name + "': expected up or down");
+  }
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this.to_string());
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {
@@ -83,10 +93,15 @@ enum MetricMode `public `clone `doc("Whether a metric binds. Enforced metrics ga
   Enforced,
   Informational,
 
-  parse!(string move name) MetricMode `factory `public `doc("Reads the wire spelling.") {
+  parse!(Reader ~r) MetricMode `factory `public `doc("Reads the wire spelling.") {
+    string name = _drain(r)?^;
     if name == "enforced" { return MetricMode.Enforced; }
     if name == "informational" { return MetricMode.Informational; }
     raise VocabularyError(message: "unknown mode '" + name + "': expected enforced or informational");
+  }
+
+  format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
+    w.write_string(this.to_string());
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {

@@ -15,7 +15,7 @@ _blocks_push() VcsTransition[] {
 
 _targets() Target[] {
   Target[] t = Target[]();
-  t.push(Target.parse("linux/amd64")?!);
+  t.push(scan[Target]("linux/amd64")?!);
   return t;
 }
 
@@ -33,12 +33,12 @@ os_dispatch_prefers_the_named_override() `test {
 
 host_os_refuses_a_spelling_outside_the_set() `test {
   bool right_reason = false;
-  HostOs h = HostOs.parse("macOS") ? e {
+  HostOs h = scan[HostOs]("macOS") ? e {
     right_reason = e.message.contains("expected linux, darwin, windows, or any");
     HostOs.Any;
   };
   assert(right_reason, msg: "a near-miss spelling is refused and the set is named");
-  assert(HostOs.parse("darwin")?!.to_string() == "darwin", msg: "the canonical spelling round-trips");
+  assert(scan[HostOs]("darwin")?!.to_string() == "darwin", msg: "the canonical spelling round-trips");
 }
 
 any_matches_every_host() `test {
@@ -48,9 +48,9 @@ any_matches_every_host() `test {
 }
 
 blocks_come_from_the_vcs_vocabulary() `test {
-  assert(VcsTransition.parse("push:origin")?!.to_string() == "push:origin", msg: "a declared transition round-trips");
+  assert(scan[VcsTransition]("push:origin")?!.to_string() == "push:origin", msg: "a declared transition round-trips");
   bool right_reason = false;
-  VcsTransition v = VcsTransition.parse("deploy") ? e {
+  VcsTransition v = scan[VcsTransition]("deploy") ? e {
     right_reason = e.message.contains("unknown blocks entry");
     VcsTransition.Commit;
   };
@@ -58,24 +58,24 @@ blocks_come_from_the_vcs_vocabulary() `test {
 }
 
 an_exclusion_has_a_closed_scope_and_an_open_leaf() `test {
-  Exclusion x = Exclusion.parse("host:cpu")?!;
+  Exclusion x = scan[Exclusion]("host:cpu")?!;
   assert(x.leaf == "cpu", msg: "the leaf is opaque");
-  Exclusion deep = Exclusion.parse("project:migration:v2")?!;
+  Exclusion deep = scan[Exclusion]("project:migration:v2")?!;
   assert(deep.leaf == "migration:v2", msg: "only the first colon separates");
   bool right_reason = false;
-  Exclusion bad = Exclusion.parse("machine:cpu") ? e {
+  Exclusion bad = scan[Exclusion]("machine:cpu") ? e {
     right_reason = e.message.contains("unknown exclusion scope");
-    Exclusion.parse("host:cpu")?!;
+    scan[Exclusion]("host:cpu")?!;
   };
   assert(right_reason, msg: "a scope Reactor cannot resolve is refused at declaration");
 }
 
 a_manifest_accepts_a_precondition_and_a_monitor() `test {
   Exclusion[] x = Exclusion[]();
-  x.push(Exclusion.parse("host:cpu")?!);
+  x.push(scan[Exclusion]("host:cpu")?!);
   GateSpec[] gates = GateSpec[]();
   gates.push(_gate("tests", _blocks_push(), none, Exclusion[](), none));
-  gates.push(_gate("nightly", VcsTransition[](), Schedule.Every(Duration.from_secs(4 * 3600)), move x, Target.parse("linux/amd64")?!));
+  gates.push(_gate("nightly", VcsTransition[](), Schedule.Every(Duration.from_secs(4 * 3600)), move x, scan[Target]("linux/amd64")?!));
   Manifest m = Manifest.of(_project(), _targets(), OsCommand.of("./make"), move gates)?!;
   assert(m.gates().len == 2, msg: "both gates survive validation");
   assert(m.preflight() is present, msg: "a declared preflight is present");
@@ -106,7 +106,7 @@ an_inert_gate_is_refused() `test {
 
 a_gate_cannot_speak_for_an_undeclared_target() `test {
   GateSpec[] gates = GateSpec[]();
-  gates.push(_gate("wasm", _blocks_push(), none, Exclusion[](), Target.parse("wasm32")?!));
+  gates.push(_gate("wasm", _blocks_push(), none, Exclusion[](), scan[Target]("wasm32")?!));
   bool right_reason = false;
   Manifest m = Manifest.of(_project(), _targets(), none, move gates) ? e {
     right_reason = e.message.contains("does not declare");
@@ -116,12 +116,12 @@ a_gate_cannot_speak_for_an_undeclared_target() `test {
 }
 
 a_target_is_a_name_not_a_shape() `test {
-  Target t = Target.parse("wasm32")?!;
+  Target t = scan[Target]("wasm32")?!;
   assert(t.name == "wasm32", msg: "a target need not look like os/arch");
   bool right_reason = false;
-  Target bad = Target.parse("linux amd64") ? e {
+  Target bad = scan[Target]("linux amd64") ? e {
     right_reason = e.message.contains("whitespace");
-    Target.parse("x")?!;
+    scan[Target]("x")?!;
   };
   assert(right_reason, msg: "but it must be a usable name");
 }
@@ -169,14 +169,14 @@ a_clone_carries_every_field() `test {
   VcsTransition[] blocks = VcsTransition[]();
   blocks.push(VcsTransition.PrMerge);
   Exclusion[] excl = Exclusion[]();
-  excl.push(Exclusion.parse("arena:gpu")?!);
+  excl.push(scan[Exclusion]("arena:gpu")?!);
   string[] tags = string[]();
   tags.push("slow");
   MetricSpec[] metrics = MetricSpec[]();
   metrics.push(MetricSpec.of("tests", MetricType.Int, Direction.Up, MetricMode.Enforced));
 
   GateSpec g = GateSpec.of("full", OsCommand.of("bin/gate all"), OsCommand.of("bin/gate fix"),
-                           move os, Target.parse("darwin/arm64")?!, move arch,
+                           move os, scan[Target]("darwin/arm64")?!, move arch,
                            Duration.from_secs(900), move blocks,
                            Schedule.Every(Duration.from_secs(3600)), move excl, move tags,
                            move metrics);
