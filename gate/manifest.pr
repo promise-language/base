@@ -298,6 +298,57 @@ type Manifest `public `doc("Everything a project declares about its gates. React
     return none;
   }
 
+  blocking(this, VcsTransition transition, HostOs os, HostArch arch, string[] tags) GateSpec[] `public `doc("The gates that must be green before this transition is allowed on a host of this shape — which is what verify is. Derived rather than declared: verify is a client of this manifest, not an entry in it, so the check a developer runs and the check that refuses the push are read out of one declaration and cannot drift. An empty tag list selects every eligible gate; a non-empty one narrows to gates carrying at least one of them, which is what `verify --tags wasm` means. Allocates.") {
+    GateSpec[] chosen = GateSpec[]();
+    int i = 0;
+    while i < this._gates.len {
+      GateSpec g = this._gates[i];
+      i = i + 1;
+      if !g.eligible_on(os, arch) {
+        continue;
+      }
+      if !_blocks_transition(g, transition) {
+        continue;
+      }
+      if tags.len > 0 && !_carries_a_tag(g, tags) {
+        continue;
+      }
+      chosen.push(g.clone());
+    }
+    return chosen;
+  }
+
   targets(this) Target[] `public `doc("What the product is built for — what 'every platform' means for this project. Allocates.") => this._targets.clone();
   gates(this) GateSpec[] `public `doc("The declared gates. Allocates.") => this._gates.clone();
+}
+
+_blocks_transition(GateSpec g, VcsTransition wanted) bool {
+  VcsTransition[] declared = g.blocks();
+  int i = 0;
+  while i < declared.len {
+    VcsTransition one = declared[i];
+    if one.to_string() == wanted.to_string() {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+_carries_a_tag(GateSpec g, string[] wanted) bool {
+  string[] carried = g.tags();
+  int i = 0;
+  while i < carried.len {
+    string tag = carried[i];
+    int j = 0;
+    while j < wanted.len {
+      string want = wanted[j];
+      if tag == want {
+        return true;
+      }
+      j = j + 1;
+    }
+    i = i + 1;
+  }
+  return false;
 }

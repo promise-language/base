@@ -1,0 +1,53 @@
+_documented() Manifest {
+  wire.ProjectId p = wire.ProjectId.parse("https://github.com/promise-language/promise")?!;
+  return decode_manifest(_documented_manifest(), move p)?!;
+}
+
+_names(GateSpec[] gates) string {
+  string joined = "";
+  int i = 0;
+  while i < gates.len {
+    GateSpec g = gates[i];
+    joined = joined + g.name + " ";
+    i = i + 1;
+  }
+  return joined;
+}
+
+verify_is_the_gates_that_block_a_push() `test {
+  Manifest m = _documented();
+  GateSpec[] chosen = m.blocking(VcsTransition.PushOrigin, HostOs.Linux, HostArch.Amd64, string[]());
+  string got = _names(chosen);
+  assert(got.contains("promise-tests"), msg: "the test gate blocks a push: " + got);
+  assert(got.contains("promise-format"), msg: "so does the format gate: " + got);
+  assert(!got.contains("promise-wasm-tests"), msg: "the wasm gate blocks a merge, not a push: " + got);
+}
+
+the_merge_gate_is_a_different_set() `test {
+  Manifest m = _documented();
+  GateSpec[] chosen = m.blocking(VcsTransition.PrMerge, HostOs.Linux, HostArch.Amd64, string[]());
+  string got = _names(chosen);
+  assert(got.contains("promise-wasm-tests"), msg: "the cross-platform matrix lives at merge: " + got);
+  assert(!got.contains("promise-format"), msg: "and the push gates are not repeated there: " + got);
+}
+
+eligibility_still_applies() `test {
+  Manifest m = _documented();
+  // The wasm gate declares host_os linux and darwin; a windows host cannot speak
+  // for it, so it is not selected there even though it blocks the merge.
+  GateSpec[] chosen = m.blocking(VcsTransition.PrMerge, HostOs.Windows, HostArch.Amd64, string[]());
+  assert(chosen.len == 0, msg: "a gate that cannot run here is not selected: " + _names(chosen));
+}
+
+tags_narrow_the_selection() `test {
+  Manifest m = _documented();
+  string[] wasm = string[]();
+  wasm.push("wasm");
+  GateSpec[] chosen = m.blocking(VcsTransition.PrMerge, HostOs.Linux, HostArch.Amd64, wasm);
+  assert(chosen.len == 1, msg: "verify --tags wasm is a selector over the same set");
+
+  string[] absent = string[]();
+  absent.push("nothing-carries-this");
+  GateSpec[] none_chosen = m.blocking(VcsTransition.PrMerge, HostOs.Linux, HostArch.Amd64, absent);
+  assert(none_chosen.len == 0, msg: "a tag nobody carries selects nothing rather than everything");
+}
