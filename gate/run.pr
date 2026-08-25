@@ -6,21 +6,28 @@
 // with baselines and thresholds does that, because judging whether a number is
 // acceptable is a different job from obtaining it.
 //
-// **An exec line is exec'd, not interpreted.** `"bin/gate test --wasm"` becomes
-// the program `bin/gate` with arguments `test` and `--wasm`; there is no shell,
-// so no globbing, no pipes, no `&&`, and no substitution. That follows the
-// design rather than convenience: a shell is a capability the arena grants, and
-// a gate comes from the tree, so handing every gate command an implicit shell
-// would give tree-supplied content a reach the design says only the environment
-// hands out. A gate that genuinely needs shell features writes a script and
-// names the script.
+// **An exec line is exec'd, never interpreted**, and that is a mandatory rule of
+// the contract rather than a choice made here. `"bin/gate test --wasm"` becomes
+// the program `bin/gate` with arguments `test` and `--wasm`; no shell, so no
+// globbing, no pipes, no `&&`, no redirection, and no quoting grammar.
+//
+// The reason is portability. This has to work under PowerShell as well as
+// `cmd.exe` and the POSIX shells, and they disagree about quoting, escaping and
+// operators — so a shell-interpreted line would mean different things on
+// different hosts, and per-OS dispatch could not rescue it, because a project
+// would have to know which shell the runner happened to invoke rather than only
+// which OS it was on. It also keeps a boundary the design depends on: a shell is
+// capability the arena grants, and a gate comes from the tree.
+//
+// A gate that genuinely needs shell features writes a script and names it, which
+// puts the interpreter in the project's own file where it is chosen explicitly.
 
 use os;
 
 type RunError is error `public `doc("A gate that could not be run, or whose output could not be read.") {
 }
 
-_argv(string line) string[] `doc("Splits an exec line into program and arguments on whitespace. Deliberately not a shell grammar: there is no quoting, because supporting quoting is the first step toward supporting everything else a shell does.") {
+_argv(string line) string[] `doc("Splits an exec line into program and arguments on whitespace. Deliberately not a shell grammar, and not an incomplete one either: no quoting is supported, because supporting quoting is the first step toward supporting everything else a shell does, and the contract requires that no host's shell can change what a line means.") {
   string[] parts = line.split(" ");
   string[] argv = string[]();
   int i = 0;
