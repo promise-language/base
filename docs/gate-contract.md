@@ -120,7 +120,17 @@ test — measures test_count, test_failures, excluded_count
 
 ## The envelope
 
-A gate prints **one JSON object on stdout**, and that is its entire output channel. Human-readable progress belongs on stderr, which nothing parses.
+A gate prints **one JSON object on stdout**, and that is its entire structured output. Human-readable progress belongs on stderr, which nothing parses.
+
+**Progress reaches the reader as it is written.** Gates run long — a test suite, a full build — and a reader watching one needs to see it working rather than a silence that is indistinguishable from a hang. So stderr passes through unprocessed and unbuffered: the runner does not collect it, reformat it, prefix it or hold it until the end. The gate is writing to the reader, and the runner is not in the middle.
+
+The mechanism that makes this the default is the runner handing the gate its own stderr rather than opening a pipe for it. Nothing to forward, nothing to buffer, and a gate attached to a terminal keeps the line buffering its runtime would otherwise abandon — most runtimes switch to block buffering when output is not a terminal, so a runner that pipes stderr converts a gate's live progress into one silent block delivered at exit, which is the failure this rule exists to prevent. An orchestrator that needs progress in a record is the case that must pipe, and it forwards rather than accumulates.
+
+**Only then does the runner speak.** The structured output — the verdict, the measurements against the terms they were judged on — is produced after the envelope has been read. The gate's progress and the runner's summary never interleave, because they do not overlap in time.
+
+**Progress does not extend a deadline.** A gate that prints forever still reaches its timeout: the timeout bounds work, and a gate that is talking is not thereby making progress. Resetting a deadline on output would turn a wedged-but-chatty gate into one that runs until something else kills it.
+
+The bound in the other direction is on what is *held*, not on what is emitted. stdout is read into memory and parsed, so it is capped; stderr is never held by the runner at all, so there is nothing to cap.
 
 One gate run reports **one target**. That is invariant, not a convenience.
 
