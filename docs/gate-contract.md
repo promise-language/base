@@ -124,7 +124,11 @@ A gate prints **one JSON object on stdout**, and that is its entire structured o
 
 **Progress reaches the reader as it is written.** Gates run long — a test suite, a full build — and a reader watching one needs to see it working rather than a silence that is indistinguishable from a hang. So stderr passes through unprocessed and unbuffered: the runner does not collect it, reformat it, prefix it or hold it until the end. The gate is writing to the reader, and the runner is not in the middle.
 
-The mechanism that makes this the default is the runner handing the gate its own stderr rather than opening a pipe for it. Nothing to forward, nothing to buffer, and a gate attached to a terminal keeps the line buffering its runtime would otherwise abandon — most runtimes switch to block buffering when output is not a terminal, so a runner that pipes stderr converts a gate's live progress into one silent block delivered at exit, which is the failure this rule exists to prevent. An orchestrator that needs progress in a record is the case that must pipe, and it forwards rather than accumulates.
+**The gate is given the reader's own stream, not a pipe the runner copies.** That is the requirement, not one way of meeting it — "forwarded faithfully" is a plausible reading of the paragraph above that satisfies every word of it and defeats it. A runner that pipes stderr and copies each line onward has changed the one thing that matters: the gate is now writing to a pipe rather than to a terminal, and most runtimes switch from line to block buffering when their output is not a terminal. Ten minutes of progress arrives as one block at exit — precisely the silence the rule exists to prevent, produced by an implementation that reads as correct.
+
+**And it fails silently.** A gate whose progress arrives all at once still prints a valid envelope and still gets a correct verdict, so nothing errors and nobody investigates. The only symptom is a reader watching a gate that appears to have hung, which is indistinguishable from a gate that is simply slow.
+
+An orchestrator that needs progress in a durable record is the one case that must pipe, and it accepts the loss of liveness knowingly rather than discovering it.
 
 **Only then does the runner speak.** The structured output — the verdict, the measurements against the terms they were judged on — is produced after the envelope has been read. The gate's progress and the runner's summary never interleave, because they do not overlap in time.
 
