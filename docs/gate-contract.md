@@ -14,16 +14,18 @@ A **gate measures something and reports the measurements.** Coverage, size, dura
 
 **The subject is the tracked tree.** That is what makes the rule checkable rather than an appeal to intent: a runner records the tracked state before spawning and compares it after, and paths the project ignores are outside the subject, which is where a build cache and a report legitimately go. A gate that leaves a tracked file changed has broken the contract, whatever it printed.
 
-**A gate does not decide.** The thresholds a measurement is judged against — a cap, a ratcheting baseline — are not the gate's, and are deliberately out of reach of whatever it measures. A gate carrying its own thresholds can be made to pass by editing the gate, and when the subject is a change written by an agent, the agent can edit it. So `test_failures: 3` is not a verdict; it is a pass or a failure depending on state the gate does not have and must not be given.
+**A gate does not decide.** The thresholds a measurement is judged against — a cap, a ratcheting baseline — are not the gate's. A gate carrying its own thresholds can be made to pass by editing the gate, and when the subject is a change written by an agent, the agent can edit it. So `test_failures: 3` is not a verdict; it is a pass or a failure depending on state the gate does not have and must not be given.
+
+**The boundary is who may write a threshold, not where it sits.** Both a cap and a baseline live in the tree — see [The baseline](#the-baseline) — and that is what makes a verdict reproducible rather than what puts it at risk. What the artifact rule forbids is the party under judgement being able to move them.
 
 **A gate does not report whether it finished.** A process killed for memory, or truncated mid-write by a full disk, is not alive to say so, and one that exits cleanly having measured nothing can state something false. What became of a run is the account of whoever spawned it.
 
 **A gate is reproducible**: the same subject gives the same measurement to anyone who runs it, anywhere. That promise has two halves, and they fail identically.
 
 - **The measurement half** is why a gate is a program and not a shell script. A script inherits whatever the environment hands it — user configuration, path differences, shell dialects — so two hosts disagree about a textually identical gate for reasons that are not about the subject.
-- **The judgement half has the same shape.** Put the verdict inside the gate and the gate needs the threshold locally: a file in the tree, a cached copy, something. Two hosts holding different copies then disagree about a textually identical gate, again for a reason that is not about the subject.
+- **The judgement half has the same shape.** A verdict is a measurement judged against a threshold, so it is reproducible only if the threshold is too. A threshold that can differ between two runs over the same subject — a per-host cache, or state on a server that moves on its own schedule — makes two hosts disagree about a textually identical gate, again for a reason that is not about the subject.
 
-Same failure one layer up, and the same fix: take the varying thing out of the gate. "A gate is a program" and "a gate does not decide" are one principle applied to the two halves of the promise, not two preferences that happen to coexist.
+Same failure one layer up, and the same fix in both halves: **what a verdict depends on must be a function of the subject.** A gate that is a program rather than a script does not inherit the host; a threshold versioned with the tree does not vary by who is asking or when. That is why the baseline lives in the tree rather than with an orchestrator — checking out a commit from a month ago and judging it against today's baseline answers a question about neither.
 
 ## The manifest
 
@@ -103,6 +105,19 @@ The reason is portability, not preference. This must work under PowerShell as we
 
 **A gate that needs shell features writes a script and names it**, which puts the interpreter in the project's own file where it is chosen explicitly.
 
+**The runner appends `--envelope`.** The manifest declares only the gate's own line; the flag is protocol, not project configuration, so it has one spelling everywhere and a runner adds it without being told to. It is appended last, after whatever the project declared, because that is the only rule that works without parsing the line: `bin/gate test --wasm` is run as `bin/gate test --wasm --envelope`.
+
+**A gate prints an envelope only when it was given the flag.** Any other invocation is a person or an agent at a terminal, and must produce nothing on stdout and a non-zero exit. Silence and failure are what keep the human path from becoming a second channel — a bare invocation that printed measurements and exited `0` would be read as a pass by the first script that wrapped it, which is the ambiguity the three parties exist to remove.
+
+What it prints on stderr is what the caller needed: the gate's name, what it measures, and the command that runs it.
+
+```
+$ bin/gate test
+test — measures test_count, test_failures, excluded_count
+
+  bin/run test
+```
+
 ## The envelope
 
 A gate prints **one JSON object on stdout**, and that is its entire output channel. Human-readable progress belongs on stderr, which nothing parses.
@@ -161,9 +176,36 @@ Three things follow, and they are requirements:
 
 **A modified worktree is spent.** The remaining gates selected for that transition must not run in it: they would measure a tree that no one proposed and no one reviewed, and their numbers would be honest about the wrong thing. The arena is re-materialized or the transition is abandoned; there is no partial recovery, because nothing downstream can tell which gates ran before the modification and which ran after.
 
+## Running one gate by hand
+
+A person or an agent wanting one gate's result runs **`bin/run <gate>`**, and that is the same path the runner takes rather than a parallel one. Running a single gate is common and is not a lesser case: it is faster than every gate that blocks a transition, and it is what someone iterating on one failure actually wants.
+
+`bin/run` is set up by the project's `./make` alongside `verify` and the rest of the tooling, so it is generated rather than authored — a project does not write a launcher per gate, and does not write this one either.
+
+**It reaches a verdict, and prints it for a human.** Rendering the envelope is the judging layer's job because it is the only layer that can do it: it holds the caps, the directions and the baselines, so it can put a number beside the terms it was judged on. A gate could only ever print the left-hand column.
+
+```
+$ bin/run format
+unformatted_files    3   cap 0          ✗
+```
+
+That is also why a gate keeps exactly one output mode. A gate that pretty-printed when it thought a human was watching would have two, and one of them would not parse.
+
+## The baseline
+
+A cap is declared in the manifest and changes only when a person edits it. A **baseline** is derived: the best a metric has been, which a passing run ratchets in the declared direction and which never moves back.
+
+**A baseline lives in the tree it measures, versioned with it.** That is what makes a verdict reproducible, and the reasoning is the same one that made a gate a program: what a verdict depends on must be a function of the subject. A baseline held by an orchestrator moves on its own schedule, so checking out last month's commit and judging it against today's baseline answers a question about neither tree — and adding thirty tests today would retroactively fail every tree that came before. Versioned with the tree, a commit carries the terms it was judged on, and `bin/run` reaches a verdict offline, on any machine, for any commit.
+
+**Only the runner writes it.** A baseline moves when a complete, passing run ratchets it, and by no other route. It never moves from an incomplete run: honest numbers that understate the tree would lower a floor for a reason that is not about the code, and a ratchet by construction never moves back.
+
+**A resolution's diff may not contain the baseline.** This is the artifact rule at the one place where the threshold and the subject share a tree: an agent that can move a baseline can pass itself, and a lowered floor is invisible afterwards because no later run can tell it was wrong. A change authored by a resolution that touches the baseline is refused — not merged and then flagged, because by then the floor has moved.
+
+The rule is about the **author**, not the file. A person lowering a baseline deliberately, in a reviewed change, is doing something legitimate that the ratchet has no other way to express — a metric that got worse for a reason the project accepts. Forbidding that outright would make the ratchet a floor nobody could ever lower, which is a different failure. What is forbidden is the party under judgement moving it as a side effect of being judged.
+
 ## Where the verdict is made
 
-The verdict is computed by whoever holds the manifest and the baselines, from an envelope's measurements. It exists in neither the envelope nor the exit code.
+The verdict is computed from an envelope's measurements, against the caps in the manifest and the baselines in the tree. It exists in neither the envelope nor the exit code, and it is reached outside the tree by something the tree cannot edit.
 
 **Verify is a selector over the manifest, not an entry in it.** The set of gates that must be green before a transition is allowed on a host of this shape is derived from what the gates declare they block, filtered by where they may run and by any tags the caller narrowed to. Nothing declares "the verify set" separately, so the check a developer runs and the check that refuses the push are read out of one declaration and cannot drift.
 
