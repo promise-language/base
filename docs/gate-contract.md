@@ -16,16 +16,15 @@ A **gate measures something and reports the measurements.** Coverage, size, dura
 
 **A gate does not decide.** The thresholds a measurement is judged against — a cap, a ratcheting baseline — are not the gate's. A gate carrying its own thresholds can be made to pass by editing the gate, and when the subject is a change written by an agent, the agent can edit it. So `test_failures: 3` is not a verdict; it is a pass or a failure depending on state the gate does not have and must not be given.
 
-**The boundary is who may write a threshold, not where it sits.** Both a cap and a baseline live in the tree — see [The baseline](#the-baseline) — and that is what makes a verdict reproducible rather than what puts it at risk. What the artifact rule forbids is the party under judgement being able to move them.
-
 **A gate does not report whether it finished.** A process killed for memory, or truncated mid-write by a full disk, is not alive to say so, and one that exits cleanly having measured nothing can state something false. What became of a run is the account of whoever spawned it.
 
-**A gate is reproducible**: the same subject gives the same measurement to anyone who runs it, anywhere. That promise has two halves, and they fail identically.
+**A gate is reproducible**: the same subject gives the same measurement to anyone who runs it, anywhere. Three rules protect that, and they are three rather than one because they fail differently and are satisfied separately.
 
-- **The measurement half** is why a gate is a program and not a shell script. A script inherits whatever the environment hands it — user configuration, path differences, shell dialects — so two hosts disagree about a textually identical gate for reasons that are not about the subject.
-- **The judgement half has the same shape.** A verdict is a measurement judged against a threshold, so it is reproducible only if the threshold is too. A threshold that can differ between two runs over the same subject — a per-host cache, or state on a server that moves on its own schedule — makes two hosts disagree about a textually identical gate, again for a reason that is not about the subject.
+- **A gate is a program, not a shell script** — the *environment* must not vary. A script inherits whatever the host hands it: user configuration, path differences, shell dialects. Two hosts then disagree about a textually identical gate for reasons that are not about the subject.
+- **A threshold is a function of what it judges** — the *threshold* must not vary. A verdict is a measurement judged against a threshold, so it is reproducible only if the threshold is; one that moves on a schedule of its own makes the same subject pass today and fail tomorrow.
+- **The party under judgement may not move a threshold** — the *author* is constrained. This is the artifact rule, and it does not follow from the other two: a threshold can be perfectly reproducible and still worthless if the thing being measured can edit it.
 
-Same failure one layer up, and the same fix in both halves: **what a verdict depends on must be a function of the subject.** A gate that is a program rather than a script does not inherit the host; a threshold versioned with the tree does not vary by who is asking or when. That is why the baseline lives in the tree rather than with an orchestrator — checking out a commit from a month ago and judging it against today's baseline answers a question about neither.
+Collapsing these reads well and costs precision. The second and third are about different things — where a threshold's value comes from, and who may change it — and a model that merges them predicts that a threshold must live beside its subject, which is true of one kind and not the other.
 
 ## The manifest
 
@@ -146,7 +145,7 @@ An envelope carries a `schema_version`, the `target` its measurements speak for,
 
 **Completeness is the absence of a reason.** A run that measured less than usual — a suite skipped for a missing tool, a subset deliberately selected — carries the reason it did. A run that measured everything carries nothing. There is no separate completeness flag, because a flag is a second field a reader could find disagreeing with the reason sitting beside it. An incomplete run with nothing to say is the one state an envelope cannot mean, and is refused.
 
-**A baseline is never moved from an incomplete run.** Honest numbers that understate the tree are indistinguishable from a regression unless the run says so, and ratcheting on one lowers the floor for a reason that is not about the code.
+**Which is why the reason is worth the trouble to carry.** Honest numbers that understate the subject are indistinguishable from a regression unless the run says so, and what a consumer must then do about it is under [Caps and baselines](#caps-and-baselines).
 
 **There is no marker for "the envelope is whole."** A gate killed mid-write emits malformed JSON, which already fails to parse; a flag meaning that would say nothing the parser does not.
 
@@ -205,21 +204,21 @@ unformatted_files    3   cap 0          ✗
 
 That is also why a gate keeps exactly one output mode. A gate that pretty-printed when it thought a human was watching would have two, and one of them would not parse.
 
-## The baseline
+## Caps and baselines
 
-A cap is declared in the manifest and changes only when a person edits it. A **baseline** is derived: the best a metric has been, which a passing run ratchets in the declared direction and which never moves back.
+A **cap** is declared in the manifest and changes only when a person edits it. A **baseline** is derived: the best a metric has been, which a passing run ratchets in the declared direction and which never moves back.
 
-**A baseline lives in the tree it measures, versioned with it.** That is what makes a verdict reproducible, and the reasoning is the same one that made a gate a program: what a verdict depends on must be a function of the subject. A baseline held by an orchestrator moves on its own schedule, so checking out last month's commit and judging it against today's baseline answers a question about neither tree — and adding thirty tests today would retroactively fail every tree that came before. Versioned with the tree, a commit carries the terms it was judged on, and `bin/run` reaches a verdict offline, on any machine, for any commit.
+Both belong to the judging layer and **a gate reads neither**, which is why this document says no more about them than the two rules a consumer of an envelope has to honour.
 
-**Only the runner writes it.** A baseline moves when a complete, passing run ratchets it, and by no other route. It never moves from an incomplete run: honest numbers that understate the tree would lower a floor for a reason that is not about the code, and a ratchet by construction never moves back.
+**A baseline never moves from an incomplete run.** Honest numbers that understate the subject would lower a floor for a reason that is not about the code, and a ratchet by construction never moves back. Completeness is the absence of an `incomplete_reason`, so this is decidable from the envelope alone.
 
-**A resolution's diff may not contain the baseline.** This is the artifact rule at the one place where the threshold and the subject share a tree: an agent that can move a baseline can pass itself, and a lowered floor is invisible afterwards because no later run can tell it was wrong. A change authored by a resolution that touches the baseline is refused — not merged and then flagged, because by then the floor has moved.
+**A run that broke the contract moves nothing**, because it reported no measurements at all — there is nothing to ratchet, and a violation absorbed as an improvement is the same failure with no way to notice it.
 
-The rule is about the **author**, not the file. A person lowering a baseline deliberately, in a reviewed change, is doing something legitimate that the ratchet has no other way to express — a metric that got worse for a reason the project accepts. Forbidding that outright would make the ratchet a floor nobody could ever lower, which is a different failure. What is forbidden is the party under judgement moving it as a side effect of being judged.
+Where a baseline lives is not one answer. A **precondition**'s is in the tree it judges, moved by the step that lands the change, so a candidate that has not landed cannot raise the bar and a rejected one cannot lower it. A **monitor**'s lives with its history, moved by the orchestrator against landed trunk — a stress run taking two hours or a size check running daily reports about a commit several behind, with nothing left to amend it into and nothing to refuse. [base-engineering.md](https://github.com/promise-language/reactor/blob/main/docs/base-engineering.md#preconditions-and-monitors-are-different-things) specifies which kind a metric gets and what may move each.
 
 ## Where the verdict is made
 
-The verdict is computed from an envelope's measurements, against the caps in the manifest and the baselines in the tree. It exists in neither the envelope nor the exit code, and it is reached outside the tree by something the tree cannot edit.
+The verdict is computed from an envelope's measurements, against the caps the manifest declared and whichever baseline the metric is judged on. It exists in neither the envelope nor the exit code, and it is reached outside the tree by something the tree cannot edit.
 
 **Verify is a selector over the manifest, not an entry in it.** The set of gates that must be green before a transition is allowed on a host of this shape is derived from what the gates declare they block, filtered by where they may run and by any tags the caller narrowed to. Nothing declares "the verify set" separately, so the check a developer runs and the check that refuses the push are read out of one declaration and cannot drift.
 
