@@ -121,19 +121,19 @@ test — measures test_count, test_failures, excluded_count
 
 A gate prints **one JSON object on stdout**, and that is its entire structured output. Human-readable progress belongs on stderr, which nothing parses.
 
-**Progress reaches the reader as it is written.** Gates run long — a test suite, a full build — and a reader watching one needs to see it working rather than a silence that is indistinguishable from a hang. So stderr passes through unprocessed and unbuffered: the runner does not collect it, reformat it, prefix it or hold it until the end. The gate is writing to the reader, and the runner is not in the middle.
+**Progress reaches the reader as it is written.** Gates run long — a test suite, a full build — and a reader watching one needs to see it working rather than a silence that is indistinguishable from a hang. So stderr passes through unprocessed and unbuffered: the gate runner does not collect it, reformat it, prefix it or hold it until the end. The gate is writing to the reader, and the runner is not in the middle.
 
-**The gate is given the reader's own stream, not a pipe the runner copies.** That is the requirement, not one way of meeting it — "forwarded faithfully" is a plausible reading of the paragraph above that satisfies every word of it and defeats it. A runner that pipes stderr and copies each line onward has changed the one thing that matters: the gate is now writing to a pipe rather than to a terminal, and most runtimes switch from line to block buffering when their output is not a terminal. Ten minutes of progress arrives as one block at exit — precisely the silence the rule exists to prevent, produced by an implementation that reads as correct.
+**The gate is given the reader's own stream, not a pipe the gate runner copies.** That is the requirement, not one way of meeting it — "forwarded faithfully" is a plausible reading of the paragraph above that satisfies every word of it and defeats it. A runner that pipes stderr and copies each line onward has changed the one thing that matters: the gate is now writing to a pipe rather than to a terminal, and most runtimes switch from line to block buffering when their output is not a terminal. Ten minutes of progress arrives as one block at exit — precisely the silence the rule exists to prevent, produced by an implementation that reads as correct.
 
 **And it fails silently.** A gate whose progress arrives all at once still prints a valid envelope and still gets a correct verdict, so nothing errors and nobody investigates. The only symptom is a reader watching a gate that appears to have hung, which is indistinguishable from a gate that is simply slow.
 
 An orchestrator that needs progress in a durable record is the one case that must pipe, and it accepts the loss of liveness knowingly rather than discovering it.
 
-**Only then does the runner speak.** The structured output — the verdict, the measurements against the terms they were judged on — is produced after the envelope has been read. The gate's progress and the runner's summary never interleave, because they do not overlap in time.
+**Only then does the gate runner speak.** The structured output — the verdict, the measurements against the terms they were judged on — is produced after the envelope has been read. The gate's progress and the runner's summary never interleave, because they do not overlap in time.
 
 **Progress does not extend a deadline.** A gate that prints forever still reaches its timeout: the timeout bounds work, and a gate that is talking is not thereby making progress. Resetting a deadline on output would turn a wedged-but-chatty gate into one that runs until something else kills it.
 
-The bound in the other direction is on what is *held*, not on what is emitted. stdout is read into memory and parsed, so it is capped; stderr is never held by the runner at all, so there is nothing to cap.
+The bound in the other direction is on what is *held*, not on what is emitted. stdout is read into memory and parsed, so it is capped; stderr is never held by the gate runner at all, so there is nothing to cap.
 
 One gate run reports **one target**. That is invariant, not a convenience.
 
@@ -153,7 +153,9 @@ An envelope carries a `schema_version`, the `target` its measurements speak for,
 
 ## Running a gate
 
-**A gate is never invoked directly.** A caller asks a runner to run it and reads what the runner reports; spawning the process is the runner's job. Three parties with three jobs — **the gate measures, the runner observes, verify judges** — and the exit code a caller sees belongs to one of the last two, never to the gate.
+**A gate is never invoked directly.** A caller asks a gate runner to run it and reads what the runner reports; spawning the process is the runner's job. Three parties with three jobs — **the gate measures, the gate runner observes, verify judges** — and the exit code a caller sees belongs to one of the last two, never to the gate.
+
+**"Gate runner" is a role, not a process.** Anything that spawns a gate and reports what became of it is bound by this contract while it does so — a developer's `bin/run`, a CI step, or Reactor's `bin/runner`, which is one implementation of the role and has a great deal else to do besides. The rules here bind whoever is wearing the role at the time, and a process that is also an orchestrator is two parties in two paragraphs rather than one party with two sets of obligations.
 
 **The gate's own exit code is not consulted.** The states that matter most are ones a gate cannot report, because it is not alive in them: killed at the declared timeout, killed for memory, truncated mid-write on a full disk. And the substitution fails in the safe-looking direction too — a gate that exits `0` having printed nothing has stated something false, and a caller reading that number believes it.
 
@@ -161,7 +163,7 @@ This is also what keeps the exit code from being a second channel. The gate has 
 
 **The runner comes from outside the tree.** That is the boundary the thresholds sit behind and it is there for the same reason: a gate an agent can edit must not decide whether that agent's change passed, and a runner taken from the worktree could be edited to skip. Being remote is not what makes a runner trusted — one that never speaks to a server and only keeps tabs on what it started satisfies this exactly as well. **The property is whose artifact it is.**
 
-### What the runner reports
+### What the gate runner reports
 
 One of five outcomes, and they are the full set:
 
@@ -191,7 +193,7 @@ Three things follow, and they are requirements:
 
 ## Running one gate by hand
 
-A person or an agent wanting one gate's result runs **`bin/run <gate>`**, and that is the same path the runner takes rather than a parallel one. Running a single gate is common and is not a lesser case: it is faster than every gate that blocks a transition, and it is what someone iterating on one failure actually wants.
+A person or an agent wanting one gate's result runs **`bin/run <gate>`**, and that is the same path a gate runner takes rather than a parallel one. Running a single gate is common and is not a lesser case: it is faster than every gate that blocks a transition, and it is what someone iterating on one failure actually wants.
 
 `bin/run` is set up by the project's `./make` alongside `verify` and the rest of the tooling, so it is generated rather than authored — a project does not write a launcher per gate, and does not write this one either.
 
