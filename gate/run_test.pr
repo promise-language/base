@@ -34,20 +34,20 @@ a_gate_that_prints_an_envelope_is_read() `test {
 }
 
 a_gate_that_prints_nothing_is_not_an_error() `test {
-  // A gate may die before it can measure. The exit code says so; a missing
-  // envelope is absence, not a malformed one.
+  // A gate may die before it can measure. A missing envelope is absence rather
+  // than a malformed one, and what killed it is the runner's to report.
   GateSpec g = _spec("/usr/bin/true");
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
   GateOutput? printed = r.output();
   assert(!(printed is present), msg: "silence is absent rather than unreadable");
-  assert(r.exit_code == 0, msg: "and the exit code is reported as given");
+  assert(r.exit_code == 0, msg: "and the process's own code is recorded as the kernel gave it");
 }
 
 a_failing_gate_is_a_successful_run() `test {
   // Running a gate that reports failure is not a failure to run it.
   GateSpec g = _spec("/usr/bin/false");
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
-  assert(r.exit_code != 0, msg: "the gate failed and said so through its exit code");
+  assert(r.exit_code != 0, msg: "the process's own code is recorded, and is not what the run amounted to");
 }
 
 output_that_is_not_an_envelope_is_refused() `test {

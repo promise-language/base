@@ -6,6 +6,31 @@
 // with baselines and thresholds does that, because judging whether a number is
 // acceptable is a different job from obtaining it.
 //
+// **A gate is never invoked directly.** A caller asks the runner to run it and
+// reads what the runner reports; spawning the process is the runner's job, not
+// the caller's. Three parties with three jobs — the gate measures, the runner
+// observes, verify judges against the manifest — and the exit code a caller sees
+// belongs to whichever of the last two it asked, never to the gate.
+//
+// The gate's own exit code is not consulted, because the states that matter most
+// are the ones a gate cannot report: it is not alive in them. A process killed by
+// the declared timeout, killed for memory, or truncated mid-write by a full disk
+// says nothing at all, and one that exits 0 having printed nothing has said
+// something false. Only the party that spawned it can tell those apart, and it
+// can say so in terms no gate could have reached.
+//
+// That is also what keeps the exit code from being a second channel. The gate has
+// exactly one output — the envelope on stdout — and everything else a caller
+// learns is the runner's account of what it watched. Two channels that could
+// disagree never arise, so there is no rule here for when they do.
+//
+// **A gate comes from the tree; the runner does not.** That is the boundary caps
+// sit behind and it is there for the same reason: a gate an agent can edit must
+// not be what decides whether that agent's change passed, and a runner taken from
+// the worktree could be edited to skip. Being remote is not what makes a runner
+// trusted — one that never speaks to a server and only keeps tabs on what it
+// started satisfies this exactly as well. The property is whose artifact it is.
+//
 // **An exec line is exec'd, never interpreted**, and that is a mandatory rule of
 // the contract rather than a choice made here. `"bin/gate test --wasm"` becomes
 // the program `bin/gate` with arguments `test` and `--wasm`; no shell, so no
@@ -41,7 +66,7 @@ _argv(string line) string[] `doc("Splits an exec line into program and arguments
   return argv;
 }
 
-type GateRun `public `doc("What one execution of one gate produced. It reports rather than judges: the exit code as the gate gave it, and the envelope if the gate printed a readable one.") {
+type GateRun `public `doc("What one execution of one gate produced, as the runner watched it happen. It reports rather than judges: the envelope if the gate printed a readable one, and beside it the raw facts of how the process ended.") {
   string _gate `final;
   int _exit_code `final;
   GateOutput? _output `final;
@@ -52,7 +77,7 @@ type GateRun `public `doc("What one execution of one gate produced. It reports r
 
   get gate string `public `doc("The gate's declared name.") => this._gate;
 
-  get exit_code int `public `doc("The process's exit code, unchanged. Reported rather than interpreted — a gate that measures a failure and says so in its envelope has done its job, and whether that exit code means anything is the caller's to decide against what the manifest declared.") => this._exit_code;
+  get exit_code int `public `doc("The gate process's exit code as the kernel reported it, kept for diagnosis. Neither an outcome nor a verdict, and not what a caller reads to learn either: a gate killed mid-run never chose a code, and one that exits 0 having printed nothing has stated something false. What the run amounted to is the runner's account of it, and what the numbers amounted to is verify's.") => this._exit_code;
 
   output(this) GateOutput? `public `doc("The envelope the gate printed, absent when it printed nothing readable. Allocates.") {
     if this._output is present {
@@ -92,7 +117,7 @@ run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `p
   return GateRun.of(move name, code, move envelope);
 }
 
-_envelope!(string gate, string move printed) GateOutput? `doc("Reads what the gate printed, if it printed anything. Silence is absent rather than an error: a gate may fail before it can measure, and the exit code already says so.") {
+_envelope!(string gate, string move printed) GateOutput? `doc("Reads what the gate printed, if it printed anything. Silence is absent rather than an error: a gate may die before it can measure, and how the process ended is the runner's to report rather than this decode's to guess.") {
   if printed.is_empty {
     return none;
   }
