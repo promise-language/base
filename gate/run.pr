@@ -1,3 +1,5 @@
+use json;
+
 // run.pr — executing one gate and reading what it reported.
 //
 // **The contract this implements is [docs/gate-contract.md](../docs/gate-contract.md)**,

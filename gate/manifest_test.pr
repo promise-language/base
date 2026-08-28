@@ -1,3 +1,5 @@
+use wire "../wire";
+
 _gate(string move name, VcsTransition[] move blocks, Schedule? move schedule,
       Exclusion[] move exclusions, Target? move target) GateSpec {
   HostOs[] os = HostOs[]();

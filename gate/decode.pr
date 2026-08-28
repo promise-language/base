@@ -19,6 +19,7 @@
 // two of those leaked 300 allocations on one realistic manifest. Parsing still
 // leaks a small bounded amount that this file could not account for; see #57.
 
+use wire "../wire";
 use json;
 
 type ManifestError is error `public `doc("A manifest that cannot be read or cannot be accepted.") {

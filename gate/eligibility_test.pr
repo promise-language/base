@@ -1,3 +1,5 @@
+use wire "../wire";
+
 _only(string move json_text) GateSpec {
   // Bound rather than passed inline: a temporary consumed in a call argument is
   // not freed (promise-language/promise#57).

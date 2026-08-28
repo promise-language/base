@@ -1,3 +1,5 @@
+use wire "../wire";
+
 _this_project() wire.ProjectId {
   return wire.ProjectId.parse("https://github.com/promise-language/promise")?!;
 }

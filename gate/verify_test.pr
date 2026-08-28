@@ -1,3 +1,5 @@
+use wire "../wire";
+
 _documented() Manifest {
   wire.ProjectId p = wire.ProjectId.parse("https://github.com/promise-language/promise")?!;
   return decode_manifest(_documented_manifest(), move p)?!;
