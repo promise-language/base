@@ -69,6 +69,13 @@ different owners.** A contract whose ends share an owner stays with that owner, 
 sides deploy separately and therefore still need versioning — the runner and the Reactor server
 being the case in point.
 
+## Contracts
+
+[docs/gate-contract.md](docs/gate-contract.md) — what a project's gates must satisfy and what a runner may
+conclude from one. Normative, and deliberately language-neutral: it is satisfied by running a program
+and printing JSON, so it is stated in prose rather than only in the Promise types under `gate/` that
+implement it.
+
 ## Engineering guide
 
 [docs/engineering-guide.md](docs/engineering-guide.md) is how Promise code under BASE is written —

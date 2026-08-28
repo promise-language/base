@@ -1,51 +1,18 @@
 // run.pr — executing one gate and reading what it reported.
 //
-// A gate is a subprocess that prints an envelope to stdout. This runs it and
-// reads that back; it does not decide anything. The envelope carries
-// measurements and never a verdict, and nothing here invents one — a caller
-// with baselines and thresholds does that, because judging whether a number is
-// acceptable is a different job from obtaining it.
+// **The contract this implements is [docs/gate-contract.md](../docs/gate-contract.md)**,
+// and that document is where it is stated: a gate is a subprocess printing one
+// JSON envelope, the exec line is exec'd rather than interpreted, a gate is never
+// invoked directly, and what a run amounted to is the runner's account of it
+// rather than the gate's exit code. Restating any of that here would be a second
+// copy to keep in sync, and the contract is language-neutral while this file is
+// one language's implementation of it.
 //
-// **A gate is never invoked directly.** A caller asks the runner to run it and
-// reads what the runner reports; spawning the process is the runner's job, not
-// the caller's. Three parties with three jobs — the gate measures, the runner
-// observes, verify judges against the manifest — and the exit code a caller sees
-// belongs to whichever of the last two it asked, never to the gate.
-//
-// The gate's own exit code is not consulted, because the states that matter most
-// are the ones a gate cannot report: it is not alive in them. A process killed by
-// the declared timeout, killed for memory, or truncated mid-write by a full disk
-// says nothing at all, and one that exits 0 having printed nothing has said
-// something false. Only the party that spawned it can tell those apart, and it
-// can say so in terms no gate could have reached.
-//
-// That is also what keeps the exit code from being a second channel. The gate has
-// exactly one output — the envelope on stdout — and everything else a caller
-// learns is the runner's account of what it watched. Two channels that could
-// disagree never arise, so there is no rule here for when they do.
-//
-// **A gate comes from the tree; the runner does not.** That is the boundary caps
-// sit behind and it is there for the same reason: a gate an agent can edit must
-// not be what decides whether that agent's change passed, and a runner taken from
-// the worktree could be edited to skip. Being remote is not what makes a runner
-// trusted — one that never speaks to a server and only keeps tabs on what it
-// started satisfies this exactly as well. The property is whose artifact it is.
-//
-// **An exec line is exec'd, never interpreted**, and that is a mandatory rule of
-// the contract rather than a choice made here. `"bin/gate test --wasm"` becomes
-// the program `bin/gate` with arguments `test` and `--wasm`; no shell, so no
-// globbing, no pipes, no `&&`, no redirection, and no quoting grammar.
-//
-// The reason is portability. This has to work under PowerShell as well as
-// `cmd.exe` and the POSIX shells, and they disagree about quoting, escaping and
-// operators — so a shell-interpreted line would mean different things on
-// different hosts, and per-OS dispatch could not rescue it, because a project
-// would have to know which shell the runner happened to invoke rather than only
-// which OS it was on. It also keeps a boundary the design depends on: a shell is
-// capability the arena grants, and a gate comes from the tree.
-//
-// A gate that genuinely needs shell features writes a script and names it, which
-// puts the interpreter in the project's own file where it is chosen explicitly.
+// What is here and not there: this runs a gate and decodes what it printed, and
+// it decides nothing. The envelope carries measurements and never a verdict, and
+// nothing in this module invents one — a caller holding the manifest and the
+// baselines does that, because judging whether a number is acceptable is a
+// different job from obtaining it.
 
 use os;
 
