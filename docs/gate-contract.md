@@ -1,6 +1,9 @@
 # The gate contract
 
-**Normative.** This document defines what a project's gates must satisfy, and what a runner may conclude from one. Every statement is a requirement. Where the code does not satisfy one, an issue is open against it, tagged **`gate-contract`** — this document's filename without its extension. That is the convention for every normative document here, so the gaps against one are a label query rather than a reading of the tracker, and a document and its open deltas cannot drift apart under renaming. Nothing here records progress, status, or history.
+> **Tag:** `gate-contract` — remaining work to complete this document: the query named in
+> [`docs/index.md`](index.md).
+
+**Normative.** This document defines what a project's gates must satisfy, and what a runner may conclude from one. Every statement is a requirement. Where the code does not satisfy one, an issue is open against it under the tag above — the convention is [org/normative.md](org/normative.md). Nothing here records progress, status, or history.
 
 This is the layer's one contract that is deliberately **not** an SDK interface. A gate measures the tree it comes from, so it is built from that tree and written in whatever the tree is written in. A project satisfies this document by running a program and printing JSON — no BASE library, no Promise, no code generation. That is what makes it the one place another language legitimately enters the system, and it is why this contract is stated here in prose rather than only in the Promise types that happen to implement it. A gate author reading `gate/*.pr` to learn the contract is reading an implementation of it.
 
