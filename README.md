@@ -78,11 +78,15 @@ implement it.
 
 ## Engineering guide
 
-[docs/engineering-guide.md](docs/engineering-guide.md) is how Promise code under BASE is written —
-naming, shape, testing, visibility, and what to do when the platform is in the way. It is **the
-source other BASE repositories vendor from**: they hold a copy, because a rule kept in another repo
-is not in an agent's context at the moment it has to be followed, and when a copy disagrees with
-this one, this one is right.
+[docs/org/engineering-guide.md](docs/org/engineering-guide.md) is how code in this organization
+is written — naming, shape, testing, visibility, and what to do when the platform is in the way
+— with the Promise-specific form in
+[docs/org/engineering-guide-promise.md](docs/org/engineering-guide-promise.md). **Its home is
+[promise-language/org](https://github.com/promise-language/org)**: every repository holds a
+vendored copy, because a rule kept in another repo is not in an agent's context at the moment it
+has to be followed, and a copy is never edited in place. base's own earlier guide — once the
+source other repositories vendored — is retired to
+[docs/archive/engineering-guide.md](docs/archive/engineering-guide.md).
 
 ## Design
 
