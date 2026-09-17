@@ -1,3 +1,8 @@
+// Imports are per-file, not per-module: this test names `wire` itself rather
+// than inheriting main.pr's import, which is the whole point of the consumer —
+// it compiles exactly as an outside module would.
+use wire "../../wire";
+
 item_reference_round_trips_across_the_module_boundary() `test {
   wire.ProjectId p = wire.ProjectId.parse("https://github.com/promise-language/reactor")?!;
   wire.ItemId i = wire.ItemId.of(move p, "481");

@@ -76,7 +76,12 @@ run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `p
     i = i + 1;
   }
 
-  os.Process child = os.Process.spawn(program, args, none, move working_directory)?^;
+  // new_process_group is false: this runner spawns a gate, reads its stdout to
+  // EOF and waits, and never signals it. A process group exists to be signalled
+  // as a unit — signal_group requires one — so asking for it here would claim a
+  // capability nothing in this file uses, and change how a gate's own children
+  // are grouped for nobody's benefit.
+  os.Process child = os.Process.spawn(program, args, none, move working_directory, new_process_group: false)?^;
   os.ProcessOutput out = child.take_stdout()?^;
   string printed = _read_all(out)?^;
   int code = child.wait()?^;

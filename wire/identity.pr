@@ -14,6 +14,30 @@ type IdentityError is error `public `doc("A reference that cannot be accepted as
 }
 
 
+// The interface that says the paragraph above in the type system.
+//
+// `std.Parse` became `structural(protocol: true)` in epoch 2026.9, which
+// reserves the NAME `parse`: a type declaring one and not satisfying the
+// protocol is a compile error, on the reasoning that such a method is almost
+// always a near-miss its author meant to conform. Here it is not a near-miss —
+// taking a string is deliberate, and #58 is why — so what the compiler is owed
+// is the declaration that this shape is intended.
+//
+// Declaring it is the documented way to say so: the near-miss fires only for a
+// method whose owning type satisfies NO interface requiring that name, so a
+// type satisfying this one is explained and nothing fires. That keeps the
+// published spelling `parse` across all four types, which is the half of the
+// contract other modules compile against and the half a rename would break.
+//
+// It is also the seam the convergence runs through. When #58 lands and a
+// `Reader` parameter is reachable across a module boundary, these types adopt
+// `std.Parse` and this interface is deleted — one edit, in one file, and every
+// caller keeps the name it already uses.
+type ParseReference `structural `public `doc("Types that parse themselves from a string reference, rather than from the Reader std.Parse declares. See promise-language/promise#58.") {
+  parse!(string move reference) Self `factory `abstract `doc("Parses an instance of Self from its string reference form, raising IdentityError when the reference cannot be accepted.");
+}
+
+
 type ProjectId `public `clone `doc("A project's identity: the canonical URL of its repository. The host selects the identity adapter, and canonicalization is that adapter's job, so this type holds an already-canonical value.") {
   string _url `final;
 
