@@ -61,13 +61,15 @@ A manifest carries a `schema_version`, the `project` it claims to belong to, the
 
 ### What a metric declares
 
-A metric declares its `name` — the key it appears under in an envelope — its `type` (`int`, `float` or `bool`), its `direction` (`up` or `down`, which way is better, and the only way a ratchet ever moves), its `mode` (`enforced` gates a transition, `informational` is recorded and never blocks), and optionally a `cap`: an absolute bound no history may relax.
+A metric declares its `name` — the key it appears under in an envelope — its `type` (`int`, `float` or `bool`), its `direction` (`at_most` or `at_least`: which side of a term a measurement must be on), its `mode` (`enforced` gates a transition, `informational` is recorded and never blocks), and optionally a `cap`: an absolute bound no history may relax.
+
+**`direction` names a bound, not a motion.** `at_most` and `at_least` state the comparison the judge makes, and they are inclusive: `at_most 0` accepts 0. Numbers have no gravity — the one question a reader of a term asks is which side of this number is acceptable, and `down`, cap 0 answers it only after the reader has worked out that "down is better" implies "at most 0". A ratchet moves a baseline only toward stricter, and that is the only way it ever moves: lower for `at_most`, higher for `at_least`.
 
 **`bool` measures a property, not a collapsed count.** Plenty of gates report a yes or no — whether the tree builds for a target, whether every source file carries the licence header, whether a vendored copy still matches upstream. Encoded as `0` and `1` those say the wrong thing: they invite comparison and arithmetic that mean nothing, and nothing distinguishes them from a count that happens to be small.
 
 The rule that keeps `bool` from spreading is the same one that made groups worth having. **Use it when the subject genuinely has two states, never to summarise something that has more.** `tests_pass: true` is strictly worse than `test_failures: 3`: it discards the magnitude that lets a ratchet move by degrees and a regression be located, and it cannot distinguish a tree that got slightly worse from one that collapsed. A bool that replaced a count has thrown away the reason the number was measured.
 
-**`false` is worse than `true`**, which is what keeps `direction` meaning the same thing for every type — `up` for a property that should become true and stay true, `down` for one that should become false. A bool ratchet is the strictest kind there is: once a project builds for a target, a later run saying it does not is a regression with no room to argue about degree. A `cap` on a bool fixes the value from the first run rather than from history — "true from the outset", as against the ratchet's "never worse than it has been".
+**`false` is worse than `true`**, which is what keeps `direction` meaning the same thing for every type — `at_least` for a property that should become true and stay true, `at_most` for one that should become false. A bool ratchet is the strictest kind there is: once a project builds for a target, a later run saying it does not is a regression with no room to argue about degree. A `cap` on a bool fixes the value from the first run rather than from history — "true from the outset", as against the ratchet's "never worse than it has been".
 
 **The type is declared even though the envelope states it too.** The two are a claim and its check: a run reporting a float where the manifest says int is a mismatch to name, not a widening to absorb — the envelope is refused and the run broke the contract, rather than the value being narrowed to fit. Changing a metric's type mid-history is a discontinuity rather than a conversion — the old values measured something else — so a changed type is flagged for review at manifest refresh rather than compared across. Absorbed silently it would move a ratchet that by construction never moves back, leaving a floor no later run could tell was wrong.
 
@@ -204,22 +206,35 @@ A person or an agent wanting one gate's result runs **`bin/run <gate>`**, and th
 
 ```
 $ bin/run format
-unformatted_files    3   cap 0          ✗
+unformatted_files    3   at most 0      ✗
 ```
 
 That is also why a gate keeps exactly one output mode. A gate that pretty-printed when it thought a human was watching would have two, and one of them would not parse.
 
 ## Caps and baselines
 
-A **cap** is declared in the manifest and changes only when a person edits it. A **baseline** is derived: the best a metric has been, which a passing run ratchets in the declared direction and which never moves back.
+A **cap** is declared in the manifest and changes only when a person edits it. A **baseline** is derived: the best a metric has been, which a passing run ratchets toward stricter — lower for `at_most`, higher for `at_least` — and which never moves back.
 
-Both belong to the judging layer and **a gate reads neither**, which is why this document says no more about them than the two rules a consumer of an envelope has to honour.
+Both belong to the judging layer and **a gate reads neither**. The two rules below are what a consumer of an envelope has to honour; the files the judging layer keeps them in are under [The terms files](#the-terms-files).
 
 **A baseline never moves from an incomplete run.** Honest numbers that understate the subject would lower a floor for a reason that is not about the code, and a ratchet by construction never moves back. Completeness is the absence of an `incomplete_reason`, so this is decidable from the envelope alone.
 
 **A run that broke the contract moves nothing**, because it reported no measurements at all — there is nothing to ratchet, and a violation absorbed as an improvement is the same failure with no way to notice it.
 
 Where a baseline lives is not one answer. A **precondition**'s is in the tree it judges, moved by the step that lands the change, so a candidate that has not landed cannot raise the bar and a rejected one cannot lower it. A **monitor**'s lives with its history, moved by the orchestrator against landed trunk — a stress run taking two hours or a size check running daily reports about a commit several behind, with nothing left to amend it into and nothing to refuse. [base-engineering.md](https://github.com/promise-language/reactor/blob/main/docs/base-engineering.md#preconditions-and-monitors-are-different-things) specifies which kind a metric gets and what may move each.
+
+## The terms files
+
+A project keeps its caps in `tools/gates/thresholds.json`, and the ratcheted baselines that live in its tree — a **precondition**'s, [above](#caps-and-baselines) — in `tools/gates/baselines.json`, at those paths in every project. A **monitor**'s is in neither, because it is not in the tree at all. One path is what lets a judge, a doctor or a person read the terms of a tree they have never seen; a project that put them somewhere of its own would be a project whose terms nothing else can find.
+
+Each file is a JSON object mapping a metric's `name` — the same name the manifest declared and the envelope reports under — to one entry.
+
+- A **threshold entry** is `{"direction", "cap"}`: the cap the manifest declared, in the form the judging layer reads it.
+- A **baseline entry** is `{"direction", "value"}`, or `{"direction", "targets"}` for a metric that genuinely differs by platform. `targets` maps a target — what the measurement speaks for, usually spelled `<os>/<arch>` — to that target's value. An entry states one or the other, never both.
+
+**A metric named in both files states the same direction in both.** A metric has one direction, so two files disagreeing about it is a metric whose verdict depends on which file was read — and the two are read by different code at different moments, so which one wins is not a decision anybody made.
+
+**The files are read strictly.** An unknown key, a missing field, an unknown direction, or an entry carrying both `value` and `targets` is refused, naming the file and the entry. A term read permissively is a term nobody is held to: a key silently ignored and a key correctly applied look identical afterwards, and these files carry nothing but terms, so there is no other content in which the loss would show.
 
 ## Where the verdict is made
 
