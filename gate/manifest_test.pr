@@ -175,7 +175,7 @@ a_clone_carries_every_field() `test {
   string[] tags = string[]();
   tags.push("slow");
   MetricSpec[] metrics = MetricSpec[]();
-  metrics.push(MetricSpec.of("tests", MetricType.Int, Direction.Up, MetricMode.Enforced));
+  metrics.push(MetricSpec.of("tests", MetricType.Int, Direction.AtLeast, MetricMode.Enforced));
 
   GateSpec g = GateSpec.of("full", OsCommand.of("bin/gate all"), OsCommand.of("bin/gate fix"),
                            move os, scan[Target]("darwin/arm64")?!, move arch,

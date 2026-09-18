@@ -10,8 +10,9 @@ import (
 
 // The judge's terms, as an artefact distinct from the judge.
 //
-// The workspace's docs/tool-contract.md §3 places them at
-// tools/gates/thresholds.json, and the separation is the point: a judge that
+// docs/gate-contract.md#the-terms-files places them at
+// tools/gates/thresholds.json, with ratcheted baselines beside them at
+// tools/gates/baselines.json, and the separation is the point: a judge that
 // carried its own numbers inline could be relaxed in the same change that broke
 // what they measure, and the relaxation would read as ordinary code. Kept here,
 // a change to the terms is a change to a tracked file whose whole content is

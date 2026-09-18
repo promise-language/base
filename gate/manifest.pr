@@ -68,15 +68,15 @@ enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` o
   };
 }
 
-enum Direction `public `clone `doc("Which way is better. A ratchet only ever moves this way.") {
-  Up,
-  Down,
+enum Direction `public `clone `doc("Which side of a term a measurement must be on, inclusive — so at_most 0 accepts 0. A bound rather than a motion: numbers have no gravity, and 'down, cap 0' answers which side is acceptable only after a reader has worked out that it means at most 0. It is also the only way a ratchet ever moves, and only toward stricter: lower for at_most, higher for at_least.") {
+  AtMost,
+  AtLeast,
 
   parse!(Reader ~r) Direction `factory `public `doc("Reads the wire spelling.") {
     string name = _drain(r)?^;
-    if name == "up" { return Direction.Up; }
-    if name == "down" { return Direction.Down; }
-    raise VocabularyError(message: "unknown direction '" + name + "': expected up or down");
+    if name == "at_most" { return Direction.AtMost; }
+    if name == "at_least" { return Direction.AtLeast; }
+    raise VocabularyError(message: "unknown direction '" + name + "': expected at_most or at_least");
   }
 
   format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
@@ -84,8 +84,8 @@ enum Direction `public `clone `doc("Which way is better. A ratchet only ever mov
   }
 
   to_string(this) string `public `doc("The wire spelling.") => match this {
-    Up => "up",
-    Down => "down",
+    AtMost => "at_most",
+    AtLeast => "at_least",
   };
 }
 
@@ -136,7 +136,7 @@ type MetricSpec `public `clone `doc("One metric a gate emits, and the terms it i
 
   get name string `public `doc("The key this metric appears under in a gate's envelope.") => this._name;
   get kind MetricType `public `doc("What this metric measures in. Changing it mid-history is a discontinuity rather than a conversion — the old values measured something else — which is why a changed kind is [flagged for admin review at manifest refresh](https://github.com/promise-language/reactor/blob/main/docs/base-engineering.md#discovery-lifecycle) rather than compared across. Absorbed silently it would move a ratchet that by construction never moves back, leaving a floor no later run could tell was wrong.") => this._kind;
-  get direction Direction `public `doc("Which way is better.") => this._direction;
+  get direction Direction `public `doc("Which side of this metric's cap or baseline a measurement must be on.") => this._direction;
   get mode MetricMode `public `doc("Whether this metric binds a transition.") => this._mode;
   get has_cap bool `public `doc("Whether an absolute bound was declared.") => this._has_cap;
 
