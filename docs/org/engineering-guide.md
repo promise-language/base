@@ -3,16 +3,15 @@
 > **Tag:** `engineering-guide` — remaining work to complete this document: the query named in
 > `docs/index.md`.
 
-> **Home:** [promise-language/org](https://github.com/promise-language/org) — this document is
-> distributed into each managed project as `docs/org/`. A copy is never edited in place: to
-> change it, file an issue against `org`.
+> **Home:** [promise-language/org](https://github.com/promise-language/org) — this document
+> changes here and nowhere else. To change it, file an issue against `org`.
 
 How code in this organization is written, in any language — naming, shape, testing, visibility,
 effects, and what to do when the platform is in the way. The language-specific form of these rules
 lives in the per-language guides — [`engineering-guide-promise.md`](engineering-guide-promise.md),
 [`engineering-guide-go.md`](engineering-guide-go.md) — which apply this document to one language
-and never contradict it. A rule stated as a blockquote is an invariant, and the prose under it is
-why.
+and never contradict it. Its blockquotes are read as [normative.md](normative.md#end-state) says:
+each is an invariant, and the prose under it is why.
 
 ## Why this is in the tree
 
@@ -21,9 +20,12 @@ lives in another repo is not in the agent's context at the moment it has to be f
 referencing it is the same as not having it.
 
 **So every repository holds a copy, byte-identical to the source, and machinery keeps it that
-way.** The copy is provisioned and hash-checked, never hand-synced: a local edit fails the commit
-and points at the source repository, which is where a rule changes. What is true only of one
-project lives in that project's own documents, which cite this one — never in edits to the copy.
+way.** The copy is tracked content that arrives by sync and is never hand-edited: an edit to it
+is refused, and the refusal points at the home repository, which is where a rule changes. The
+rules of the copy — where it sits, how it is listed, how a gap against it is filed — are
+[normative.md](normative.md)'s, and this guide relies on them without restating them. What is
+true only of one project lives in that project's own documents, which cite this one — never in
+edits to the copy.
 
 ## One obvious way
 
@@ -39,14 +41,63 @@ shadow the real path all fail it. When a second way is found, one of the two is 
 ## Naming
 
 - **Full English words.** `print_line`, not `println`. `execute`, not `exec`.
-- **Where a language guide carries an approved abbreviation dictionary, its abbreviations are
+- **The abbreviation dictionary below is the closed list of exceptions, and its entries are
   mandatory.** Where a mapping exists, the abbreviation is the correct form, not a tolerated one;
-  where none exists, the full word is.
+  where none exists, the full word is. It applies in every language and on every surface a name
+  appears — code, flags, wire fields.
 - **Proper names are verbatim.** Technologies, formats, and algorithms keep their own spelling —
   `base64`, `utf8`, `json`, `sha256`, `url` — with only the casing following the language's
   convention.
+- **A quantity is a number and its unit, and neither is an abbreviation.** `5h`, `7d`, `10mb` are
+  how a quantity is written, not a clipped word, and the unit is one a reader needs no knowledge
+  of the project to read — `-pace-7d` answers "how long" to anyone. Where the quantity's type has
+  a grammar, the name spells it as the grammar does: a duration's is
+  [flag form](cli-guide.md#flag-form)'s. What the full-word rule forbids is truncating a word —
+  `-h` for `-help` loses letters only context restores — and `7d` loses nothing.
 - **Do not prefix a member with its type.** `response.status`, not `response.status_code`. The
   caller already has the context.
+
+**The abbreviation dictionary.** A reader can always expand a full word but must have memorized
+each abbreviation, so an entry earns its place only when the short form is so universally
+recognized that it reads *better* than the word — `repo` is what `git` and `gh` call it; nobody
+says *identifier*. An entry covers its plural (`args`, `repos`). The list grows by an issue
+against this document, one word at a time, and it is not a licence: a word that is not in it is
+spelled in full, however common its clipping. Two extensions are sanctioned, and neither removes
+an entry. A language guide may add mappings particular to that language. And a project that ships
+a **released product** — a language and its standard library, a published module set — may add
+mappings for that product's public surface, in the project's own specification of that surface:
+the names a public reader meets are governed by a table the product's authors own and its users
+can read, not by one written for the organization's tooling. Everywhere else — this repository,
+every project's `bin/`, every internal surface — the table above and the language guide's
+additions are the whole list.
+
+| Abbreviation | Word |
+|---|---|
+| `abs` | absolute |
+| `arg` | argument |
+| `attr` | attribute |
+| `config` | configuration |
+| `dest` | destination |
+| `dir` | directory |
+| `env` | environment |
+| `func` | function |
+| `hex` | hexadecimal |
+| `id` | identifier |
+| `info` | information |
+| `init` | initialize |
+| `len` | length |
+| `max` | maximum |
+| `millis` | milliseconds |
+| `min` | minimum |
+| `pos` | position |
+| `prev` | previous |
+| `repo` | repository |
+| `src` | source |
+| `stderr` | standard error |
+| `stdin` | standard input |
+| `stdout` | standard output |
+| `sync` | synchronize |
+| `var` | variable |
 
 ## Types and shape
 
@@ -105,7 +156,7 @@ The test: would this sentence need editing when work happens, even though nothin
 changed? If yes, it is a record, and it belongs where records live. A document points at where
 status lives rather than reporting it.
 
-## Finish it, or file what is left
+## Finish it or file what is left
 
 > **A change is done when it satisfies the normative document. Until then, the difference is an
 > issue — filed before the change lands, not after.**
@@ -153,7 +204,7 @@ platform never learns about: a gap is a platform request, not a local problem.
 - **The exception is deliberate vendoring**, as with this document — byte-identical, hash-checked,
   with its source named.
 
-## Plan first, then follow it
+## Plan first
 
 > **A plan names the files and functions it will change and what each change does — and it plans
 > the smallest change that resolves the item.** A plan that could have been written without
@@ -222,6 +273,59 @@ A sleep standing in for a happens-before edge is load-sensitive: the window that
 laptop collapses on a loaded runner, and no amount of lengthening fixes it. This is not a ban on
 testing timing *behaviour*; it is a ban on using a clock where a signal belongs.
 
+> **Nothing retries to make a failure go away.** Code does not re-attempt an operation in the
+> hope that it succeeds, until it succeeds, or to let something else finish first. A retry
+> implements a contract or it does not exist: it is admissible only where a specification names
+> the failure transient and the operation safe to repeat, and the code cites that contract at the
+> retry.
+
+A retry is the time rule with the clock taken out: it assumes the failure is transient without
+establishing it, and it is tuned by the same reflex — when three attempts do not clear it, someone
+writes five, and nothing distinguishes 3 from 5 from 100000. It is worse than a sleep. A sleep
+delays a result; a retry changes it, converting a reproducible defect into an intermittent one,
+and the first failure — the one carrying the diagnostic — is the one the loop discards. A retry is
+almost always arguable by analogy and almost never justified by evidence; the named contract is
+how the two are told apart. A failure nobody understood is reported, with its evidence, and filed
+— never re-attempted.
+
+> **A test never reads the wall clock.** Every instant a test depends on is injected and pinned;
+> a test whose outcome changes with the date it runs on is asserting the date.
+
+> **Code that takes a clock takes all of its time from it.** Once a component accepts an injected
+> clock, every reading of time inside it — stamping, expiry, pruning, backoff — goes through that
+> clock. A direct read of the system clock beside an injected one is a second clock, and the two
+> agree only in production, where nobody is looking.
+
+A wall-clock dependency is the environment dependency ([testing](#testing)) that arrives on a
+schedule: it passes on the day it is written, so review and the gate approve it, and it fails
+later on a tree nobody touched, where bisection finds every commit equally guilty. Pinning the
+test's clock is not the fix on its own — a mixed clock makes the code look testable, and the tests
+it passes are valid only within a window around the day they were written. The fix is one source
+of time, and the test controls it. This bans an outcome that depends on the calendar, not
+measuring real elapsed time where that is the behaviour under test.
+
+## Everything a program writes has a ceiling
+
+> **A sink that only grows is a leak with a slower clock.** A log, a journal, a spool, a cache, a
+> retained buffer, a table of past runs — anything appended to across a process's life is
+> declared with a bound where it is created, the way a timeout is a named parameter declared at
+> one boundary.
+
+"It is only a log" is the reasoning that produces a gigabyte of one repeated line. The damage is
+not the disk. An unbounded sink is why a malfunction runs unnoticed: the process that
+malfunctions is the one that writes fastest, and past a certain size the evidence is a file
+nobody opens — the pathology funds its own concealment.
+
+- **The bound belongs to the writer** — not to an operator's cron job, and not to a reader that
+  trims on the way in. A sink is unbounded until the thing appending to it says otherwise.
+- **Cap by rotating and keeping segments, never by truncating to the tail.** What is worth
+  reading in a log is usually when a condition *started*, and a cap that keeps only the most
+  recent bytes discards exactly that.
+- **For a slow-onset condition the origin is worth as much as the tail.** Rotation that drops the
+  oldest segment first still loses the line that dates the whole thing; where the first record
+  matters, the bound keeps the first segment alongside the last ones. A bound that destroys the
+  diagnosis is not a bound worth having.
+
 ## Look for the silent classes
 
 Correctness bugs announce themselves. These do not, so they are a standing obligation in **any code
@@ -233,6 +337,7 @@ a change touches** — not only in the lines it adds:
 | **Lifetime errors** | double free, use after free, missing scope cleanup |
 | **Concurrency races** | lock ordering, park/wake, channel close |
 | **Resource waste** | handles, connections, and processes opened and never accounted for |
+| **Unbounded sinks** | a log, journal, or cache with no ceiling — [everything a program writes has a ceiling](#everything-a-program-writes-has-a-ceiling) |
 
 **Anything found here is filed at critical priority**, whether or not the current change caused it.
 These are the classes that survive review, pass tests, and surface in production as something
@@ -281,11 +386,13 @@ wrong once.
 - **Co-locate tests with the code they test.** A separate tree is for cross-cutting integration
   tests only.
 - **Tests never rely on the environment they happen to run in** — the host's locale, a
-  developer's `PATH`, ambient credentials, the working directory. A test states its whole world or
+  developer's `PATH`, ambient credentials, the working directory, the current date or time
+  ([time is not a coordinate](#time-is-not-a-coordinate)). A test states its whole world or
   builds it.
 - **Zero leaks, and the check never gets suppressed.** There is no annotation for tolerating one.
 - **Every wire contract has a conformance suite**, and every implementation passes the same one.
-- Synchronization rules for tests are in [Time is not a coordinate](#time-is-not-a-coordinate).
+- Synchronization, retry, and clock rules for tests are in
+  [Time is not a coordinate](#time-is-not-a-coordinate).
 
 ## No hidden effects
 
@@ -306,7 +413,7 @@ child process, and makes two identical command lines do different things. It is 
 of [one obvious way](#one-obvious-way). A capability reachable only by setting a variable is a
 missing flag, and the fix is the flag.
 
-## Ask, do not guess
+## Ask rather than guess
 
 > **A decision you cannot make from the item, the code, and the documents is asked for — never
 > guessed, and never worked around.**
@@ -315,7 +422,7 @@ The ask carries the decision needed, the evidence it rests on, and a recommendat
 cannot choose between options without seeing what they are choosing about. Ask only what you
 genuinely cannot decide — a question is for a missing decision, not for something unread.
 
-## Evidence, not assertion
+## Evidence over assertion
 
 - **A claim of "already done", "cannot be done", or "not needed" carries proof** — the commit,
   the code, the reproduction. Without it, the claim is indistinguishable from giving up, and
@@ -327,7 +434,7 @@ genuinely cannot decide — a question is for a missing decision, not for someth
 - **Report what happened, not what was intended.** A summary describes the change that exists —
   which is not always the change that was planned.
 
-## Prompts point here; they do not restate this
+## Prompts point here
 
 A flow's step prompts are the natural place for these rules to be repeated, and repeating them
 there is the same defect as everything else in [Define once](#define-once): a prompt that restates

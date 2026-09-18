@@ -3,13 +3,13 @@
 > **Tag:** `engineering-guide-go` — remaining work to complete this document: the query named in
 > `docs/index.md`.
 
-> **Home:** [promise-language/org](https://github.com/promise-language/org) — this document is
-> distributed into each managed project as `docs/org/`. A copy is never edited in place: to
-> change it, file an issue against `org`.
+> **Home:** [promise-language/org](https://github.com/promise-language/org) — this document
+> changes here and nowhere else. To change it, file an issue against `org`.
 
 The [engineering guide](engineering-guide.md) applied to Go source. Nothing here contradicts it;
-everything here is Go-specific form. Go has no org abbreviation dictionary; the standard library's
-own names (`Len`, `Dir`, `Env`) are the vocabulary.
+everything here is Go-specific form. Go adds nothing to the guide's abbreviation dictionary; a
+name the standard library already uses is the platform's spelling and, like any proper name, is
+used verbatim.
 
 ## Shape
 
@@ -22,6 +22,9 @@ own names (`Len`, `Dir`, `Env`) are the vocabulary.
   where an item id belongs. Conversions happen at the boundary, once.
 - **A quantity is `time.Duration` / `time.Time`**, never an `int` of implied units or a formatted
   string.
+- **A clock is injected — a `func() time.Time` or a clock value taken at construction — and
+  `time.Now()` appears where the clock is constructed and nowhere inside what takes it.** The
+  guide's clock rule in Go form: one source of time, and a test pins it.
 
 ## Errors
 

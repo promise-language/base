@@ -28,8 +28,9 @@ under-report and read as nearly done.
 
 Vendored from [promise-language/org](https://github.com/promise-language/org) at the release
 named in [org/stamp.json](org/stamp.json). Never edited here: an issue about one of these
-documents is filed against `org` (org/normative.md §7); what this project files locally under
-their tags is its own compliance gaps.
+documents is filed against `org`
+([org/normative.md#reconciliation](org/normative.md#reconciliation)); what this project files
+locally under their tags is its own compliance gaps.
 
 - [org/normative.md](org/normative.md) — What makes a document binding, and the one docs
   structure every project holds.
@@ -41,6 +42,10 @@ their tags is its own compliance gaps.
   Go source.
 - [org/cli-guide.md](org/cli-guide.md) — How every command-line tool behaves at its invocation
   surface.
+- [org/identity.md](org/identity.md) — What names a host, a guest, an arena, a tool and a
+  process, and how each identity is created.
+- [org/logging.md](org/logging.md) — How the development tools and the orchestration system log:
+  the line, where it is written, its bounds, and the path to one store for the fleet.
 - [org/stamp.json](org/stamp.json) — The version stamp: the org release these copies came from,
   with per-file hashes.
 
