@@ -225,7 +225,7 @@ Where a baseline lives is not one answer. A **precondition**'s is in the tree it
 
 ## The terms files
 
-A project keeps its caps in `tools/gates/thresholds.json` and its ratcheted baselines in `tools/gates/baselines.json`, at those paths in every project. One path is what lets a judge, a doctor or a person read the terms of a tree they have never seen; a project that put them somewhere of its own would be a project whose terms nothing else can find.
+A project keeps its caps in `tools/gates/thresholds.json`, and the ratcheted baselines that live in its tree — a **precondition**'s, [above](#caps-and-baselines) — in `tools/gates/baselines.json`, at those paths in every project. A **monitor**'s is in neither, because it is not in the tree at all. One path is what lets a judge, a doctor or a person read the terms of a tree they have never seen; a project that put them somewhere of its own would be a project whose terms nothing else can find.
 
 Each file is a JSON object mapping a metric's `name` — the same name the manifest declared and the envelope reports under — to one entry.
 
