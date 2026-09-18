@@ -72,6 +72,28 @@ an_exclusion_has_a_closed_scope_and_an_open_leaf() `test {
   assert(right_reason, msg: "a scope Reactor cannot resolve is refused at declaration");
 }
 
+// That `at_most` and `at_least` read and render is covered where the documented
+// example is decoded. What is left is the other half of a closed set: that the
+// motion words it replaced are gone, and that a reader who writes one is told
+// which bounds to write instead.
+direction_refuses_both_motion_words_and_names_the_bounds() `test {
+  bool named_the_set = false;
+  Direction up = scan[Direction]("up") ? e {
+    named_the_set = e.message.contains("expected at_most or at_least");
+    Direction.AtMost;
+  };
+  assert(named_the_set, msg: "a motion word is refused, and the refusal names the bounds that replaced it");
+
+  // The other retired word too: an alias restored for one of them alone would
+  // leave the test for the other green.
+  bool down_refused = false;
+  Direction down = scan[Direction]("down") ? e {
+    down_refused = true;
+    Direction.AtMost;
+  };
+  assert(down_refused, msg: "both motion words are gone, not just the one an example used");
+}
+
 a_manifest_accepts_a_precondition_and_a_monitor() `test {
   Exclusion[] x = Exclusion[]();
   x.push(scan[Exclusion]("host:cpu")?!);
