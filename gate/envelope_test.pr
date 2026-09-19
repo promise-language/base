@@ -184,6 +184,17 @@ a_group_carries_its_members() `test {
   assert(!s.contains("null"), msg: "an absent detail or elapsed is an absent key, not a null: " + s);
 }
 
+// The member's outcome in its wire spelling. An envelope that has been through
+// validate has one on every member, so the marker below stands for a state
+// these tests should never see rather than for a member legitimately without.
+_spelling(GroupMember member) string {
+  Outcome? outcome = member.outcome;
+  if outcome is present {
+    return outcome.to_string();
+  }
+  return "<no outcome>";
+}
+
 members_survive_the_wire() `test {
   GateOutput out = GateOutput.of("linux/amd64", _metrics());
   out.with_group(_one_test_file());
@@ -198,7 +209,7 @@ members_survive_the_wire() `test {
 
   GroupMember first = members[0];
   assert(first.name == "test_and", msg: "in the order the gate reported them");
-  assert(first.outcome.to_string() == "pass", msg: "with its outcome");
+  assert(_spelling(first) == "pass", msg: "with its outcome");
   string? no_detail = first.detail();
   assert(!(no_detail is present), msg: "a pass that needed no explaining carries none");
   // A tolerance rather than equality, and the gap is not this type's: the json
@@ -213,7 +224,7 @@ members_survive_the_wire() `test {
   assert(timed_right, msg: "and its duration, as measured");
 
   GroupMember second = members[1];
-  assert(second.outcome.to_string() == "fail", msg: "the failure is still a failure");
+  assert(_spelling(second) == "fail", msg: "the failure is still a failure");
   string? why = second.detail();
   bool explained = false;
   if why is present {
@@ -222,7 +233,7 @@ members_survive_the_wire() `test {
   assert(explained, msg: "and the panic that explains it survived the boundary it used to be discarded at");
 
   GroupMember third = members[2];
-  assert(third.outcome.to_string() == "excluded", msg: "an exclusion is a decision, and it comes back as one");
+  assert(_spelling(third) == "excluded", msg: "an exclusion is a decision, and it comes back as one");
   f64? untimed = third.elapsed();
   assert(!(untimed is present), msg: "and a thing the subject never timed reports no duration rather than zero");
 }
@@ -280,7 +291,7 @@ every_outcome_spelling_round_trips() `test {
   while j < members.len {
     GroupMember m = members[j];
     string want = spellings[j];
-    string got = m.outcome.to_string();
+    string got = _spelling(m);
     if got != want {
       every_one = false;
     }
@@ -294,13 +305,15 @@ every_outcome_spelling_round_trips() `test {
 
 an_unknown_outcome_is_refused() `test {
   string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"pkg/gate\",\"metrics\":\{\},\"members\":[\{\"name\":\"test_or\",\"outcome\":\"passed\"\}]\}]\}";
-  bool right_reason = false;
-  GateOutput back = json.decode_string[GateOutput](move wire) ? e {
-    right_reason = e.message.contains("unknown outcome 'passed'");
+  string refusal = "";
+  json.decode_string[GateOutput](move wire) ? e {
+    refusal = e.message.clone();
     GateOutput.of("linux/amd64", _metrics());
   };
-  assert(right_reason, msg: "a spelling outside the closed set is refused at the boundary, not missed at a lookup");
-  assert(back.groups().len == 0, msg: "and nothing of the refused envelope is read");
+  assert(refusal.contains("unknown outcome 'passed'"),
+         msg: "a spelling outside the closed set is refused at the boundary, not missed at a lookup: " + refusal);
+  assert(refusal.contains("pass, fail, timeout, leak, memory, excluded, or not-run"),
+         msg: "and the refusal says what was allowed instead, which is the whole reason the set is closed: " + refusal);
 }
 
 a_member_with_no_name_is_refused() `test {
@@ -314,6 +327,20 @@ a_member_with_no_name_is_refused() `test {
     right_reason = e.message.contains("has no name") && e.message.contains("pkg/gate");
   };
   assert(right_reason, msg: "a member that names nothing says nothing, and the message names the group it was in");
+}
+
+a_member_with_no_outcome_is_refused() `test {
+  // The one required field on a member whose type has no empty value to arrive
+  // as, so this is the case that decides whether a gate in another language
+  // omitting it is refused or takes the reading process down with it: the
+  // envelope has to hold the absence long enough for validate to name it.
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"pkg/gate\",\"metrics\":\{\},\"members\":[\{\"name\":\"test_or\",\"detail\":\"panic\"\}]\}]\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  bool right_reason = false;
+  back.validate() ? e {
+    right_reason = e.message.contains("reports no outcome") && e.message.contains("test_or");
+  };
+  assert(right_reason, msg: "a member that never says how its thing turned out is refused, and the message names it");
 }
 
 a_detail_with_nothing_to_say_is_refused() `test {

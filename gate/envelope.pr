@@ -74,7 +74,7 @@ enum Outcome `public `clone `doc("How one named thing inside a group turned out.
 
 type GroupMember `public `serializable `clone `doc("One named thing inside a group, and how it turned out. A group says which file regressed; a member says which test, and what it said when it did — the same argument one level further down, and the one a reader who knows a file got worse would otherwise re-run the suite to answer.") {
   string _name `final `key("name");
-  Outcome _outcome `final `key("outcome");
+  Outcome? _outcome `final `key("outcome");
   string? _detail `final `key("detail");
   f64? _elapsed `final `key("elapsed");
 
@@ -84,7 +84,7 @@ type GroupMember `public `serializable `clone `doc("One named thing inside a gro
 
   get name string `public `doc("The thing, as the subject names it.") => this._name;
 
-  get outcome Outcome `public `doc("How it turned out. A fact about this named thing and never a verdict about the run: what the measurements amount to is decided outside the gate, against terms the gate does not hold.") => this._outcome;
+  get outcome Outcome? `public `doc("How it turned out. A fact about this named thing and never a verdict about the run: what the measurements amount to is decided outside the gate, against terms the gate does not hold. Optional on the way in, and never absent in an envelope that passed `validate`: a member arriving from another language may omit the key, and this type has to be able to hold what that gate printed in order to say what is wrong with it. Every other required field on this wire does that by arriving as its empty value; an enum has none, and a derived decode handed a missing one unwraps a none and takes the reading process down instead of refusing the envelope (promise-language/base#39).") => this._outcome;
 
   detail(this) string? `public `doc("What explained a bad outcome — a panic, an assertion message — absent when nothing did. Bounded: the assertion and where it was, not the transcript around it, which is what stderr already carries. Allocates.") {
     if this._detail is present {
@@ -124,6 +124,9 @@ type MetricGroup `public `serializable `clone `doc("Measurements for one part of
 _validate_member!(string group, GroupMember member) `doc("Raises on a member that cannot mean what it says. Every message names the group and the member, because an envelope refused without saying which entry did it sends a reader back through the whole run.") {
   if member.name.is_empty {
     raise GateError(message: "a member of group '" + group + "' has no name, so it names nothing");
+  }
+  if !(member.outcome is present) {
+    raise GateError(message: "member '" + member.name + "' of group '" + group + "' reports no outcome, which is what a member is for");
   }
   string? detail = member.detail();
   if detail is present {
