@@ -1,26 +1,19 @@
 // The gate output envelope: what one gate run reports to Reactor.
 //
-// A gate reports what it measured and whether those measurements cover everything
-// it normally measures. It does not report a verdict — Reactor decides pass or
-// fail by checking these metrics against the caps and baselines the project
-// declared, because a subprocess that judges its own output is the one thing the
-// artifact rule exists to prevent.
+// **The contract this implements is [docs/gate-contract.md](../docs/gate-contract.md)**,
+// and that document is where it is stated: a gate reports measurements and never
+// a verdict, completeness is the absence of a reason rather than a flag beside
+// one, there is no marker for an envelope being whole, a member's outcome is a
+// fact about one named thing, and a measurement carries the type it was measured
+// in. Restating any of that here would be a second copy to keep in sync, and the
+// contract is language-neutral while this file is one language's implementation
+// of it.
 //
-// There is no marker for "the envelope is whole". A gate killed mid-write emits
-// malformed JSON, which already fails to parse, so a completeness flag meaning
-// that would say nothing the parser does not.
-//
-// Nor is there one for "the measurements are whole". A run that measured less
-// than usual carries the reason it did; a run that measured everything carries
-// nothing. Completeness is read off that absence on both sides, so the wire has
-// no field a reader could find disagreeing with the reason sitting beside it.
-//
-// The encoding is derived rather than written. Hand-writing it bought one thing
-// — bare numbers for measurements — and cost the envelope its readability: a
-// bare 5 is an int and a float alike, so nothing could read back what a gate
-// wrote without the manifest open beside it. The type now travels with the
-// value, and the envelope means the same thing to a reader that it meant to
-// the gate that wrote it.
+// What is here and not there: this module's encoding is derived from the
+// declared shape rather than written, which is how the type comes to travel with
+// the value with no encoder for anyone to maintain. `Outcome` is the one
+// departure — it writes and reads its wire spelling by hand — and it and each
+// platform defect worked around here are argued at the declaration they sit on.
 
 type GateError is error `public `doc("A gate envelope that cannot be accepted.") {
 }

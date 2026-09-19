@@ -1,14 +1,15 @@
 // The closed vocabularies a manifest is written in.
 //
-// Every set here could have been a string, and each one that was would fail the
-// same way: a value spelled `macOS` where `darwin` was meant does not error, it
-// misses a lookup and runs the wrong command. Closed sets refuse it at the
-// boundary and say what was allowed instead.
+// **The contract this implements is
+// [docs/gate-contract.md](../docs/gate-contract.md#closed-vocabularies)**, and
+// that document is where it is stated: which sets are closed and what is in each,
+// that a value outside one is refused at the boundary rather than missed at a
+// lookup, and why closing a set later is the irreversible direction. Restating
+// any of that here would be a second copy to keep in sync, and the contract is
+// language-neutral while this file is one language's implementation of it.
 //
-// Closed is also the only reversible choice. Opening a set later accepts values
-// that were previously refused, which breaks nothing; closing one later refuses
-// values already written down, which breaks everything holding them — and the
-// wire evolves additively, so there is no version in which that becomes safe.
+// What is here and not there: one Promise type per set, plus `Target`, which the
+// contract leaves open and which carries only the check that a name is usable.
 
 // These types carry the canonical `Parse`/`Format` pair — `parse!(Reader ~r)` and
 // `format!(Writer ~w)` — so they will satisfy the interfaces without change when
