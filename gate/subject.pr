@@ -16,6 +16,13 @@
 // leaves `git status` saying exactly what it said before, so a check built on the
 // worktree alone reads that run as honest.
 //
+// What the two readings cannot see is a path whose content changed while its
+// status did not: a tracked file already modified before the gate ran, or an
+// untracked file already sitting there, prints the identical porcelain line
+// afterwards. A repairing gate reaches a dirty worktree unseen, which is a
+// wider gap than the modify-and-restore one the check knowingly accepts —
+// promise-language/base#52 is what closes it.
+//
 // This module says *what* changed and never what a run amounted to. Turning a
 // difference into an outcome is the runner's, in run.pr, because the outcome is
 // the runner's account of what it watched rather than a fact about the tree.

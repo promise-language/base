@@ -9,7 +9,11 @@ use os;
 // for the wrong reason.
 //
 // This lives here rather than in run_test.pr because it makes the thing this
-// file is about, and run_test.pr uses this one rather than keeping a second.
+// file is about, and run_test.pr uses this one rather than keeping a second:
+// a run records the tracked state of the directory it is given, so a test that
+// gave it none would take the developer's own checkout as the gate's subject
+// and report a file saved while the suite ran as a gate that modified it
+// (docs/org/engineering-guide.md, "Testing" — a test states its whole world).
 _a_worktree(string name) string {
   string dir = os.temp_dir + "/gate-subject-" + os.process_id.to_string() + "-" + name;
   io.Dir.make_all(dir)?!;
