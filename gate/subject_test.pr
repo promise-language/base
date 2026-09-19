@@ -195,6 +195,79 @@ a_modification_that_was_restored_is_not_seen() `test {
   assert(!(difference is present), msg: "a modification that was put back leaves nothing for a comparison to find");
 }
 
+a_path_the_gate_put_back_is_a_difference() `test {
+  // The other half of the comparison: a line the earlier reading had and the
+  // later one does not. It is the repairing gate arriving from the other
+  // direction — the change under measurement was in the worktree, and the gate
+  // reverted it to what HEAD holds — and a comparison that looked only for
+  // lines that appeared would report this run as honest and let its numbers,
+  // which are about a tree nobody proposed, move a baseline.
+  string dir = _a_worktree("reverted");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+  io.File.write_content(dir + "/subject.txt", "the change under measurement\n")?!;
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "a worktree put back to what HEAD holds is not the worktree the gate was given");
+  if difference is present {
+    assert(difference.contains("subject.txt"), msg: "naming the path it reverted: " + difference);
+  }
+}
+
+a_line_that_stopped_being_the_first_one_is_still_the_same_line() `test {
+  // Why the status is kept exactly as git printed it. A porcelain line begins
+  // with its two status characters, so trimming a reading eats the leading
+  // space of whichever line happens to be first — and on the day another path
+  // sorts above it, that same untouched line reads as one that vanished and one
+  // that appeared at once, and the difference accuses a gate of rewriting a
+  // file it never opened. Both readings being trimmed does not save it: which
+  // line is first is what changed.
+  string dir = _a_worktree("first-line");
+  io.File.write_content(dir + "/a-first.txt", "as found\n")?!;
+  io.File.write_content(dir + "/b-second.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+  io.File.write_content(dir + "/b-second.txt", "the change under measurement\n")?!;
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/a-first.txt", "repaired\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "the path the gate rewrote is a difference");
+  if difference is present {
+    assert(difference.contains("a-first.txt"), msg: "naming the path the gate rewrote: " + difference);
+    assert(!difference.contains("b-second.txt"),
+           msg: "and naming only that one, rather than the line that changed position under it: " + difference);
+  }
+}
+
+a_rewrite_of_a_path_that_was_already_dirty_is_not_seen() `test {
+  // A gap rather than an accepted limit, asserted the way
+  // a_gate_whose_program_is_absent_is_not_yet_could_not_start asserts one, so
+  // that the day promise-language/base#52 closes this test fails and says what
+  // it was holding. A porcelain line carries two status characters and a path
+  // and nothing about the bytes, so a file that was already modified when the
+  // first reading was taken reads identically once a gate has rewritten it.
+  // Unlike the restored case above this needs no gate built to evade anything:
+  // a repairing gate and a worktree that is merely dirty are enough.
+  string dir = _a_worktree("already-dirty");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+  io.File.write_content(dir + "/subject.txt", "the change under measurement\n")?!;
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/subject.txt", "repaired\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(!(difference is present),
+         msg: "which is the wrong answer, and is #52's to fix rather than something this check ever claimed");
+}
+
 a_difference_names_a_bounded_number_of_paths() `test {
   // A gate that rewrites the whole tree is the case that matters most and the
   // one that would print the longest detail, so the summary is bounded where it
@@ -223,10 +296,55 @@ a_difference_names_a_bounded_number_of_paths() `test {
   if difference is present {
     assert(difference.contains("(+" + (total - _named_paths).to_string() + " more)"),
            msg: "the summary says how many it did not name: " + difference);
-    // The bound is on the whole summary rather than on each half of it, and a
-    // length assertion is the only thing that catches a cap applied per half.
     assert(difference.len < 400, msg: "and stays a detail rather than becoming a transcript: "
                                       + difference.len.to_string() + " bytes");
+  }
+}
+
+the_bound_holds_across_both_halves_of_a_difference() `test {
+  // Every line above is a line that appeared, so a cap applied per half would
+  // compute the very same summary there. This is the tree that tells them
+  // apart: eight paths rewritten and eight put back, which a per-half cap names
+  // sixteen of — twice what the bound promised, in a detail chosen to fit one
+  // log line. That is the count _name_into threads through both calls for.
+  string dir = _a_worktree("both-halves");
+  int each = _named_paths;
+  int i = 0;
+  while i < each {
+    io.File.write_content(dir + "/kept-" + i.to_string() + ".txt", "as found\n")?!;
+    io.File.write_content(dir + "/dropped-" + i.to_string() + ".txt", "as found\n")?!;
+    i = i + 1;
+  }
+  _committed(dir, "the subject");
+  // Dirty before the reading is taken, so that putting these back is a line
+  // that vanishes while the rewrites below are lines that appear.
+  int j = 0;
+  while j < each {
+    io.File.write_content(dir + "/dropped-" + j.to_string() + ".txt", "the change under measurement\n")?!;
+    j = j + 1;
+  }
+
+  Subject before = Subject.recorded(dir)?!;
+  int k = 0;
+  while k < each {
+    io.File.write_content(dir + "/kept-" + k.to_string() + ".txt", "repaired\n")?!;
+    io.File.write_content(dir + "/dropped-" + k.to_string() + ".txt", "as found\n")?!;
+    k = k + 1;
+  }
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "a tree changed in both directions at once is a difference");
+  if difference is present {
+    // How many it named, counted rather than inferred from the length: a
+    // summary that names sixteen paths and then claims eight of them were left
+    // out satisfies every other assertion that could be written here.
+    int named = difference.split(".txt").len - 1;
+    assert(named == _named_paths,
+           msg: "the bound is on the whole summary rather than on each half, so " + named.to_string()
+                + " paths are named where " + _named_paths.to_string() + " were promised: " + difference);
+    assert(difference.contains("(+" + each.to_string() + " more)"),
+           msg: "and the rest are counted rather than dropped: " + difference);
   }
 }
 
@@ -245,4 +363,27 @@ a_directory_that_is_not_a_worktree_cannot_be_observed() `test {
     Subject(_status: "", _tree: "");
   };
   assert(right_reason, msg: "a directory git will not answer about is refused, and named");
+}
+
+what_git_complained_about_is_reduced_to_one_line() `test {
+  // Reached directly because a run cannot reach it: the refusal above is one
+  // line, and the multi-line complaints are the ones a host produces rather
+  // than a test — dubious ownership, which git follows with the command to
+  // run, is the one every container hits. All of it lands in a message a
+  // person reads and a log line holds, so the bound is on the complaint rather
+  // than on whatever records it.
+  string reduced = _complaint("fatal: detected dubious ownership in repository at '/w'\n"
+                              + "To add an exception for this directory, call:\n\n"
+                              + "\tgit config --global --add safe.directory /w\n");
+  assert(reduced == "fatal: detected dubious ownership in repository at '/w'",
+         msg: "the first line, and the advice under it left where it was: " + reduced);
+  assert(_complaint("fatal: not a git repository\n") == "fatal: not a git repository",
+         msg: "and a complaint that is already one line keeps its whole self, minus the newline");
+  // A git that failed and said nothing leaves the message it is appended into
+  // ending in a colon, so the absence is answered in words. It is asserted
+  // because the obvious way to write that guard does not fire: splitting an
+  // empty string yields one empty line rather than no lines, so a test on how
+  // many lines came back is a branch nothing reaches.
+  assert(_complaint("") == "git said nothing",
+         msg: "and a refusal with nothing on stderr still finishes the sentence: " + _complaint(""));
 }

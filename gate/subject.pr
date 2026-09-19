@@ -93,12 +93,15 @@ _git!(string directory, string[] args) os.ProcessResult `doc("Runs one git comma
   return os.execute("git", args, none, directory.clone())?^;
 }
 
-_complaint(string stderr) string `doc("What git said about a directory it would not answer for, as one line. Trimmed because git's complaint ends in a newline and this is appended into a message, and reduced to its first line because the rest is advice for a person at a terminal rather than for a log.") {
-  string[] lines = stderr.trim().split("\n");
-  if lines.len == 0 {
+_complaint(string stderr) string `doc("What git said about a directory it would not answer for, as one line. Trimmed because git's complaint ends in a newline and this is appended into a message, and reduced to its first line because the rest is advice for a person at a terminal rather than for a log. A git that failed and said nothing at all is answered in words rather than with the empty string, which would leave the message it is appended into ending in a colon and a reader looking for the rest of a sentence nobody wrote.") {
+  string said = stderr.trim();
+  // On the trimmed text rather than on the split: splitting an empty string
+  // yields one empty line rather than no lines, so a length test here never
+  // fires and the sentence below is never reached.
+  if said.is_empty {
     return "git said nothing";
   }
-  return lines[0].trim();
+  return said.split("\n")[0].trim();
 }
 
 _lines(string status) string[] `doc("The porcelain lines of one status reading, with the blanks dropped. Splitting leaves a trailing empty line behind the final newline, and an empty line is not a path.") {

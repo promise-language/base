@@ -329,6 +329,40 @@ a_gate_with_no_command_for_this_host_is_not_charged_with_a_modification() `test 
          msg: "a manifest defect is settled before there is a subject to look at");
 }
 
+get _loses_the_worktree string => "gate-loses-the-worktree.sh";
+
+_a_gate_that_leaves_no_worktree_behind() string {
+  // A gate that takes the repository out from under the reading and then
+  // prints a perfectly good envelope. The envelope is the point: this is the
+  // one shape where the comparison cannot be made at all rather than coming
+  // back with a difference, and the attractive wrong answer is to treat a
+  // reading that failed as a reading that found nothing — which reports
+  // `measured` for the gate that changed the most.
+  //
+  // The repository is moved aside rather than deleted: the same directory
+  // stops being a worktree either way, and a fixture that recursively removes
+  // anything is a fixture one bad path away from removing something else.
+  string dir = _a_worktree("loses-the-worktree");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+  io.File.write_content(dir + "/" + _loses_the_worktree,
+                        "mv .git no-longer-a-worktree\n"
+                        + "echo '" + _an_envelope() + "'\n")?!;
+  return dir;
+}
+
+a_gate_that_leaves_no_worktree_behind_does_not_measure() `test {
+  string dir = _a_gate_that_leaves_no_worktree_behind();
+  GateSpec g = _spec("/bin/sh " + _loses_the_worktree);
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, move dir) ? e {
+    right_reason = e.message.contains("could not be observed");
+    GateRun.of("probe".clone(), RunOutcome.Died, none, none, none);
+  };
+  assert(right_reason,
+         msg: "a subject that cannot be read after the run stops the run, rather than the envelope standing in for it");
+}
+
 a_run_in_a_directory_that_is_not_a_worktree_raises() `test {
   // There is no sixth outcome for a subject the runner cannot see, and inventing
   // one would be wrong: the five are what a run amounted to, and this is the
