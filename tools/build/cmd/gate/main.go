@@ -88,10 +88,22 @@ func main() {
 	// wrap `bin/gate tested` would read its 0 as a pass. Refusing before
 	// measuring keeps the two readings from ever coexisting, and costs a person
 	// nothing — `bin/run <name>` is their path, and it is the one that judges.
+	//
+	// 2 and not 1, which the contract leaves open by requiring only a non-zero
+	// exit. The four codes answer two questions (cli-guide.md#exit-codes): was
+	// the subject examined — 0 and 1 say yes, 2 and 3 say no — and whose repair
+	// is it: 1 the subject's, 2 the invocation's, 3 the installation's. Nothing
+	// was measured here and the missing flag is the caller's to add, so this is
+	// 2 exactly as every other malformed invocation below is. Exiting 1 would
+	// collide with the one at the end of this function, which means the gate
+	// measured a failure — and a caller unable to tell "your tree is bad" from
+	// "you left off the flag" is the reading this whole branch exists to
+	// prevent, arriving one code further along. Not 3 either: 3 is the
+	// installation's repair, and it is answered on STDOUT — which a bare
+	// invocation must leave silent.
 	if !envelope {
-		fmt.Fprintf(os.Stderr, "gate: refusing to measure %q without --envelope; "+
-			"run `bin/run %s` for a result meant for a person\n", args[0], args[0])
-		os.Exit(1)
+		fmt.Fprint(os.Stderr, bareInvocation(args[0]))
+		os.Exit(2)
 	}
 
 	// Envelope mode. common.MeasureGate builds the document and keeps the
@@ -110,6 +122,25 @@ func main() {
 	if gerr != nil {
 		os.Exit(1)
 	}
+}
+
+// bareInvocation is what a gate says to whoever ran it without the flag.
+//
+// The three facts the contract asks for (docs/gate-contract.md, "The exec
+// line"): the gate's name, what it measures, and the command that runs it.
+// Naming the metrics is what makes this worth reading rather than a scolding —
+// someone who typed the wrong thing learns what this gate would have told
+// them, and whether it is the one they wanted.
+//
+// A value rather than a write, so the shape the contract specifies can be
+// asserted without a process: the surface is a worked example in a normative
+// document, and a rewording of it is a divergence rather than a cosmetic
+// change. Where it goes — stderr, never stdout — is the caller's, because
+// stdout carrying nothing is the other half of the same rule and belongs
+// beside the exit code that states it.
+func bareInvocation(gate string) string {
+	return fmt.Sprintf("%s — measures %s\n\n  bin/run %s\n",
+		gate, strings.Join(common.GateMetrics(), ", "), gate)
 }
 
 // writeGateList answers the discovery query in whichever form was asked for.

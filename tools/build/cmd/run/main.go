@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/promise-language/base/tools/build/common"
@@ -113,7 +114,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	v, err := judge(gate, envelope)
+	v, _, err := judge(gate, envelope)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run:", err)
 		os.Exit(2)
@@ -194,29 +195,26 @@ func writeList(asJSON bool) {
 // SDK records cannot differ. Two callers asking about the same measurement and
 // getting different verdicts is the exact failure the fixed entry point exists
 // to prevent, and it would be no less a failure for happening inside one binary.
-func judge(gate string, envelope map[string]any) (verdict, error) {
+//
+// The measurements it applied come back beside the verdict, because the
+// by-hand mode prints each one against the term it was judged on and must
+// print the number the verdict actually rested on. Reading them out of the
+// envelope a second time at the renderer would be a second copy of the
+// fallback below — two normalizations that can disagree, which is the failure
+// one shared judge exists to prevent.
+func judge(gate string, envelope map[string]any) (verdict, map[string]int64, error) {
 	measured, ok := envelope["measured"].(bool)
 	if !ok {
-		return verdict{}, fmt.Errorf(
+		return verdict{}, nil, fmt.Errorf(
 			"the envelope for gate %q does not state `measured`, so there is nothing to judge", gate)
 	}
 
 	terms, err := common.LoadThresholds(repoRoot)
 	if err != nil {
-		return verdict{}, err
+		return verdict{}, nil, err
 	}
 
-	// The measurements the envelope carries. Absent is not zero: a term whose
-	// metric nobody measured is skipped by ApplyThresholds rather than applied
-	// to an invented number.
-	measurements := map[string]int64{}
-	if raw, isMap := envelope["measurements"].(map[string]any); isMap {
-		for k, v := range raw {
-			if f, isNum := v.(float64); isNum {
-				measurements[k] = int64(f)
-			}
-		}
-	}
+	measurements := measurementsIn(envelope)
 	// failed_gates is what this envelope is fundamentally about, and an
 	// envelope that omitted it would leave the judge with no metric at all.
 	// `measured` states the same fact, so it is the fallback rather than a
@@ -231,7 +229,7 @@ func judge(gate string, envelope map[string]any) (verdict, error) {
 
 	applied, breaches := common.ApplyThresholds(terms, measurements)
 	if len(applied) == 0 {
-		return verdict{}, fmt.Errorf(
+		return verdict{}, nil, fmt.Errorf(
 			"no term in %s names anything the envelope for gate %q measured, so the verdict would rest on nothing",
 			common.ThresholdsPath, gate)
 	}
@@ -239,13 +237,48 @@ func judge(gate string, envelope map[string]any) (verdict, error) {
 	v := verdict{Acceptable: len(breaches) == 0, Thresholds: applied}
 	if v.Acceptable {
 		v.Detail = fmt.Sprintf("the %s gate reported no failure, and every term it was held to was met", gate)
-		return v, nil
+		return v, measurements, nil
 	}
 	v.Detail = strings.Join(breaches, "; ")
 	if d, isStr := envelope["detail"].(string); isStr && d != "" {
 		v.Detail += ": " + d
 	}
-	return v, nil
+	return v, measurements, nil
+}
+
+// measurementsIn reads the numbers an envelope carries, from either side of the
+// wire.
+//
+// Two shapes, because the two modes differ in whether anything encoded the
+// envelope. --verdict decodes JSON, where an object is a map[string]any and
+// every number in it is a float64; the by-hand mode is handed the map
+// MeasureGate built and never encodes it, so it arrives typed. A reader that
+// knew only the decoded shape would find nothing in the second — silently, since
+// a failed type assertion is an empty map rather than an error — and the judge
+// would fall back to reconstructing what the envelope was holding all along.
+// Today that reconstruction agrees with it, which is exactly what makes the gap
+// worth closing now: the first metric added past failed_gates would appear in
+// one mode's verdict and not the other's, from one function whose whole purpose
+// is that the two cannot differ.
+//
+// Absent is not zero: a term whose metric nobody measured is skipped by
+// ApplyThresholds rather than applied to an invented number, so a value this
+// cannot read as a number is left out rather than defaulted in.
+func measurementsIn(envelope map[string]any) map[string]int64 {
+	measurements := map[string]int64{}
+	switch raw := envelope["measurements"].(type) {
+	case map[string]int64:
+		for k, v := range raw {
+			measurements[k] = v
+		}
+	case map[string]any:
+		for k, v := range raw {
+			if f, isNum := v.(float64); isNum {
+				measurements[k] = int64(f)
+			}
+		}
+	}
+	return measurements
 }
 
 // byHand measures the gate and reports the verdict to a person.
@@ -256,19 +289,17 @@ func judge(gate string, envelope map[string]any) (verdict, error) {
 // failure HAS measured, and is not the same as one that could not run.
 func byHand(gate string) {
 	env, _ := common.MeasureGate(repoRoot, gate)
-	v, err := judge(gate, env)
+	v, measurements, err := judge(gate, env)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run:", err)
 		os.Exit(2)
 	}
 
-	// The measurement beside the term it was judged on. A verdict printed alone
-	// tells someone iterating that they failed, not what they were held to.
 	fmt.Printf("%s\n\n", gate)
-	fmt.Printf("  measured  %s\n", v.Detail)
-	for name, t := range v.Thresholds {
-		fmt.Printf("  term      %s\n", t.Describe(name))
+	for _, row := range judged(v, measurements) {
+		fmt.Println("  " + row)
 	}
+	fmt.Println()
 	if elapsed, ok := env["elapsed_seconds"].(float64); ok {
 		fmt.Printf("  elapsed   %.1fs\n", elapsed)
 	}
@@ -277,7 +308,53 @@ func byHand(gate string) {
 		return
 	}
 	fmt.Printf("  verdict   NOT acceptable\n")
+	// The gate's own account of what broke. The rows above say which metric
+	// missed which term, which is all the judging layer can know; only the gate
+	// knows which suite or which file, and a verdict without it leaves every
+	// failure reading as a number with no story.
+	fmt.Printf("  detail    %s\n", v.Detail)
 	os.Exit(1)
+}
+
+// judged renders each measurement beside the term it was judged on
+// (docs/gate-contract.md, "Running one gate by hand").
+//
+// Only the judging layer can produce these lines: it holds the caps and the
+// directions, so it can put a number next to the bound it was held to. A gate
+// could only ever print the left-hand column.
+//
+// The widths come from the rows themselves rather than from constants, so a
+// metric whose name or value is wider than base happens to measure today lines
+// up instead of pushing its own row out of the column.
+func judged(v verdict, measurements map[string]int64) []string {
+	names := make([]string, 0, len(v.Thresholds))
+	for name := range v.Thresholds {
+		names = append(names, name)
+	}
+	// Sorted, because the map is not: an order that changed between two runs of
+	// the same gate would read as a change in what was measured.
+	slices.Sort(names)
+
+	values := make([]string, len(names))
+	nameWidth, valueWidth, termWidth := 0, 0, 0
+	for i, name := range names {
+		values[i] = strconv.FormatInt(measurements[name], 10)
+		nameWidth = max(nameWidth, len(name))
+		valueWidth = max(valueWidth, len(values[i]))
+		termWidth = max(termWidth, len(v.Thresholds[name].Term()))
+	}
+
+	rows := make([]string, 0, len(names))
+	for i, name := range names {
+		term := v.Thresholds[name]
+		mark := "✓"
+		if !term.Satisfied(measurements[name]) {
+			mark = "✗"
+		}
+		rows = append(rows, fmt.Sprintf("%-*s  %*s   %-*s  %s",
+			nameWidth, name, valueWidth, values[i], termWidth, term.Term(), mark))
+	}
+	return rows
 }
 
 func usage() {

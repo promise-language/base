@@ -84,7 +84,7 @@ type GateRun `public `doc("What one execution of one gate produced, as the runne
   }
 }
 
-run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What is read is bounded as well as how long it is read for: a gate that prints past what the runner will hold is stopped where the read stops, and what that amounts to is the contract's to say. The tracked state of the subject is recorded before the spawn and compared after, and a gate that left it changed is reported as having broken the contract with no measurements at all, whatever it printed and whatever else became of it — a repairing gate prints good numbers, and `measured` is the outcome a baseline ratchets on. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job, which includes a subject it cannot see.") {
+run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, appends the envelope flag to what the manifest declared, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What is read is bounded as well as how long it is read for: a gate that prints past what the runner will hold is stopped where the read stops, and what that amounts to is the contract's to say. The tracked state of the subject is recorded before the spawn and compared after, and a gate that left it changed is reported as having broken the contract with no measurements at all, whatever it printed and whatever else became of it — a repairing gate prints good numbers, and `measured` is the outcome a baseline ratchets on. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job, which includes a subject it cannot see.") {
   OsCommand command = spec.command();
   string line = command.for_os(host);
   if line.is_empty {
@@ -107,6 +107,14 @@ run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `p
     args.push(move one);
     i = i + 1;
   }
+  // Last, after whatever the manifest declared, which is the only rule that
+  // works without parsing the exec line (docs/gate-contract.md, "The exec
+  // line"). It sits below the two returns above rather than inside _argv,
+  // which splits a line and knows nothing of the protocol: a line with no
+  // tokens in it names no program, and a flag appended to that would turn a
+  // manifest defect into a one-argument command.
+  string flag = _envelope_flag;
+  args.push(move flag);
 
   // Both returns above are settled before a process exists, so they are above
   // the recording too: there is nothing to compare a tree against when nothing
@@ -313,6 +321,10 @@ get _poll_interval Duration `doc("How often the runner looks again at a gate it 
 
 get _stdout_cap int `doc("The bound the contract puts on a gate's stdout (docs/gate-contract.md, \"The envelope\"), in bytes: one MiB, and what it means and why it is that number are stated there. It is named at one boundary rather than written at the read that enforces it, the way a timeout is, so that the number the runner holds to can be found, cited and reached by a test without reading the loop.") {
   return 1048576;
+}
+
+get _envelope_flag string `doc("The flag the runner appends to every exec line it runs (docs/gate-contract.md, \"The exec line\"), which is how a gate tells a runner's invocation from a person's. Protocol rather than project configuration: the manifest declares only the gate's own line, so a project cannot spell this wrong and a runner does not read configuration to learn its own contract. It is named at one boundary rather than written at the spawn, the way _stdout_cap is, so the one spelling there is can be found, cited and reached by a test.") {
+  return "--envelope";
 }
 
 get _kept_prefix int `doc("How much of an over-talkative gate's stdout survives into what the runner reports, in bytes. That a bounded prefix survives at all is the contract's (docs/gate-contract.md, \"The envelope\"); the size is this runner's, and it is chosen to sit well inside the bound one log line is held to (docs/org/logging.md, \"The line\") — a diagnostic that has to be cut again by whatever records it was not a bound, only a smaller unbounded one.") {
