@@ -1,0 +1,173 @@
+// subject.pr — recording what a gate was given to measure, so a runner can say
+// whether it handed it back unchanged.
+//
+// **The contract this implements is [docs/gate-contract.md](../docs/gate-contract.md)**,
+// and that document is where it is stated: a gate never modifies what it
+// measures, the subject is the tracked tree, a runner records the tracked state
+// before spawning and compares it after, and paths the project ignores are
+// outside the subject. Restating any of that here would be a second copy to keep
+// in sync, and the contract is language-neutral while this file is one
+// language's implementation of it.
+//
+// What is here and not there: the tracked state is read with `git`, and it takes
+// two questions rather than one. `git status` says what the worktree holds, and
+// the hash of `HEAD`'s tree says what it has committed. The second is not
+// redundant with the first — a gate that modifies its subject and then commits
+// leaves `git status` saying exactly what it said before, so a check built on the
+// worktree alone reads that run as honest.
+//
+// What the two readings cannot see is a path whose content changed while its
+// status did not: a tracked file already modified before the gate ran, or an
+// untracked file already sitting there, prints the identical porcelain line
+// afterwards. A repairing gate reaches a dirty worktree unseen, which is a
+// wider gap than the modify-and-restore one the check knowingly accepts —
+// promise-language/base#52 is what closes it.
+//
+// This module says *what* changed and never what a run amounted to. Turning a
+// difference into an outcome is the runner's, in run.pr, because the outcome is
+// the runner's account of what it watched rather than a fact about the tree.
+
+use os;
+
+type SubjectError is error `public `doc("A worktree whose tracked state the runner could not observe. Raised rather than reported as an outcome, because it is not a fact about the gate: the five outcomes are what a run amounted to, and a runner that cannot see the subject has not watched a run — it has failed to do its own job. It escapes run_gate to the caller for that reason, which is why it is public where RunError, which never leaves this module, is not.") {
+}
+
+type Subject `doc("The tracked state of one worktree at one instant — what a runner records before spawning a gate and compares against after. Two readings rather than one: what the worktree holds, and what it has committed. Both are kept verbatim rather than reduced to a hash, because the comparison has to be able to say which paths moved, and a hash can only say that something did.") {
+  string _status `final;
+  string _tree `final;
+
+  recorded!(string directory) Self `factory `doc("Reads the tracked state of the worktree at this directory. The status is kept exactly as git printed it — untrimmed, because a porcelain line begins with its two status characters and trimming the text would eat the first line's leading space, leaving two readings of the same tree that no longer compare equal. A directory git will not answer about is not a subject anyone can measure against, so it raises: the directory is not a worktree, or git is not on this host, and neither is something to attribute to the gate. An unborn HEAD is not that case — it is a real state of a real worktree — and it records as an empty tree hash, which compares unequal against the first commit made after it.") {
+    string[] status_args = ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"];
+    os.ProcessResult held = _git(directory, status_args)?^;
+    if held.exit_code != 0 {
+      raise SubjectError(message: "the tracked state of '" + directory + "' could not be observed: "
+                                  + _complaint(held.stderr));
+    }
+
+    string[] tree_args = ["rev-parse", "--verify", "--quiet", "HEAD^\{tree\}"];
+    os.ProcessResult committed = _git(directory, tree_args)?^;
+    // `--verify --quiet` is how an unborn HEAD answers, so a non-zero code here
+    // is a state rather than a failure. The status call above is what settles
+    // whether this is a worktree at all, so there is nothing left for this one
+    // to discover.
+    string tree = "";
+    if committed.exit_code == 0 {
+      tree = committed.stdout.trim();
+    }
+    return Subject(_status: held.stdout.clone(), _tree: move tree);
+  }
+
+  changed_from(this, Subject earlier) string? `doc("What the tracked tree does differently from when it was recorded, or nothing at all when it does not. One method rather than a predicate beside a renderer: a caller asking whether anything changed and a caller asking what changed would otherwise be two walks over the same two readings, free to disagree about the answer. The text is bounded — it names at most _named_paths of the lines that differ and then says how many more there were — because it travels into a run's detail, which is prose for a human and not a transcript. Allocates.") {
+    string[] now = _lines(this._status);
+    string[] before = _lines(earlier._status);
+    string[] appeared = _missing_from(now, before);
+    string[] vanished = _missing_from(before, now);
+    bool moved = this._tree != earlier._tree;
+    if (appeared.len == 0) && (vanished.len == 0) && !moved {
+      return none;
+    }
+
+    Builder said = Builder();
+    // What the gate left behind comes first and what it took away second: a
+    // reader diagnosing this is looking for what the gate wrote, and the far
+    // rarer case of a gate deleting or reverting something is still there to be
+    // read once they have it.
+    int named = _name_into(said, appeared, 0);
+    named = _name_into(said, vanished, named);
+    int differing = appeared.len + vanished.len;
+    if differing > named {
+      said.write_string(" (+" + (differing - named).to_string() + " more)");
+    }
+    if moved {
+      if named > 0 {
+        said.write_string("; ");
+      }
+      said.write_string("HEAD's tree moved from " + _tree_named(earlier._tree)
+                        + " to " + _tree_named(this._tree));
+    }
+    return said.to_string();
+  }
+}
+
+_git!(string directory, string[] args) os.ProcessResult `doc("Runs one git command in a directory and reports what it said. The only place this module spawns anything, so `git` is named once: a second spelling of the program is a second thing to change on the day it is reached differently. Unlike a gate, git here is the runner's own tool rather than an untrusted subprocess, so it is neither bounded by a manifest's timeout nor read through run.pr's drain — os.execute waits for it and collects both streams. Raises only where the spawn itself failed; a git that ran and refused reports a code, which is the caller's to read.") {
+  return os.execute("git", args, none, directory.clone())?^;
+}
+
+_complaint(string stderr) string `doc("What git said about a directory it would not answer for, as one line. Trimmed because git's complaint ends in a newline and this is appended into a message, and reduced to its first line because the rest is advice for a person at a terminal rather than for a log. A git that failed and said nothing at all is answered in words rather than with the empty string, which would leave the message it is appended into ending in a colon and a reader looking for the rest of a sentence nobody wrote.") {
+  string said = stderr.trim();
+  // On the trimmed text rather than on the split: splitting an empty string
+  // yields one empty line rather than no lines, so a length test here never
+  // fires and the sentence below is never reached.
+  if said.is_empty {
+    return "git said nothing";
+  }
+  return said.split("\n")[0].trim();
+}
+
+_lines(string status) string[] `doc("The porcelain lines of one status reading, with the blanks dropped. Splitting leaves a trailing empty line behind the final newline, and an empty line is not a path.") {
+  string[] kept = string[]();
+  string[] raw = status.split("\n");
+  int i = 0;
+  while i < raw.len {
+    string one = raw[i];
+    if !one.trim().is_empty {
+      kept.push(move one);
+    }
+    i = i + 1;
+  }
+  return kept;
+}
+
+_missing_from(string[] these, string[] those) string[] `doc("The lines in the first reading that the second does not have. git prints one line per path and prints them in path order, so two readings of one unchanged tree are the same lines in the same order and a line present in only one of them is a path that moved.") {
+  map[string, bool] known = map[string, bool]();
+  int i = 0;
+  while i < those.len {
+    string one = those[i];
+    known[one] = true;
+    i = i + 1;
+  }
+  string[] only = string[]();
+  int j = 0;
+  while j < these.len {
+    // Bound once rather than indexed repeatedly: a method call on an array
+    // index leaks the element copy (promise-language/promise#57). Cloned
+    // because these lines outlive the reading they were borrowed from.
+    string one = these[j];
+    if !known.contains(one) {
+      only.push(one.clone());
+    }
+    j = j + 1;
+  }
+  return only;
+}
+
+_name_into(Builder ~said, string[] lines, int already) int `doc("Appends as many of these lines as the bound still has room for, and reports how many have been named in all. The count travels in and out rather than being counted at the end, because the bound is on the whole summary and this is called once per half of it — a cap applied per half would let a difference name twice what it promised.") {
+  int named = already;
+  int i = 0;
+  while i < lines.len {
+    if named >= _named_paths {
+      return named;
+    }
+    if named > 0 {
+      said.write_string(", ");
+    }
+    // Bound once rather than indexed repeatedly: a method call on an array
+    // index leaks the element copy (promise-language/promise#57).
+    string one = lines[i];
+    said.write_string(one);
+    named = named + 1;
+    i = i + 1;
+  }
+  return named;
+}
+
+_tree_named(string tree) string `doc("How a recorded tree hash is spelled in a difference. An empty hash is an unborn HEAD rather than a missing reading, and saying so is what keeps a reader from going looking for a commit that was never made.") {
+  if tree.is_empty {
+    return "no commit";
+  }
+  return tree.clone();
+}
+
+get _named_paths int `doc("How many differing paths a difference names before it stops naming them and says how many are left. Named at one boundary rather than written at the loop that enforces it, the way the runner's stdout bound is, so the number a summary holds to can be found and reached by a test. Chosen so that a difference stays inside the bound one log line is held to (docs/org/logging.md, \"The line\") even when every path named is a long one — a detail that has to be cut again by whatever records it was not a bound, only a smaller unbounded one.") {
+  return 8;
+}
