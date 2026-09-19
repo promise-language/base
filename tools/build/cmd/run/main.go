@@ -214,17 +214,7 @@ func judge(gate string, envelope map[string]any) (verdict, map[string]int64, err
 		return verdict{}, nil, err
 	}
 
-	// The measurements the envelope carries. Absent is not zero: a term whose
-	// metric nobody measured is skipped by ApplyThresholds rather than applied
-	// to an invented number.
-	measurements := map[string]int64{}
-	if raw, isMap := envelope["measurements"].(map[string]any); isMap {
-		for k, v := range raw {
-			if f, isNum := v.(float64); isNum {
-				measurements[k] = int64(f)
-			}
-		}
-	}
+	measurements := measurementsIn(envelope)
 	// failed_gates is what this envelope is fundamentally about, and an
 	// envelope that omitted it would leave the judge with no metric at all.
 	// `measured` states the same fact, so it is the fallback rather than a
@@ -254,6 +244,41 @@ func judge(gate string, envelope map[string]any) (verdict, map[string]int64, err
 		v.Detail += ": " + d
 	}
 	return v, measurements, nil
+}
+
+// measurementsIn reads the numbers an envelope carries, from either side of the
+// wire.
+//
+// Two shapes, because the two modes differ in whether anything encoded the
+// envelope. --verdict decodes JSON, where an object is a map[string]any and
+// every number in it is a float64; the by-hand mode is handed the map
+// MeasureGate built and never encodes it, so it arrives typed. A reader that
+// knew only the decoded shape would find nothing in the second — silently, since
+// a failed type assertion is an empty map rather than an error — and the judge
+// would fall back to reconstructing what the envelope was holding all along.
+// Today that reconstruction agrees with it, which is exactly what makes the gap
+// worth closing now: the first metric added past failed_gates would appear in
+// one mode's verdict and not the other's, from one function whose whole purpose
+// is that the two cannot differ.
+//
+// Absent is not zero: a term whose metric nobody measured is skipped by
+// ApplyThresholds rather than applied to an invented number, so a value this
+// cannot read as a number is left out rather than defaulted in.
+func measurementsIn(envelope map[string]any) map[string]int64 {
+	measurements := map[string]int64{}
+	switch raw := envelope["measurements"].(type) {
+	case map[string]int64:
+		for k, v := range raw {
+			measurements[k] = v
+		}
+	case map[string]any:
+		for k, v := range raw {
+			if f, isNum := v.(float64); isNum {
+				measurements[k] = int64(f)
+			}
+		}
+	}
+	return measurements
 }
 
 // byHand measures the gate and reports the verdict to a person.

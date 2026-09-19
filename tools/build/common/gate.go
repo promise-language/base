@@ -264,21 +264,11 @@ func MeasureGate(repoRoot, name string) (map[string]any, error) {
 	gerr := RunGate(repoRoot, name)
 	os.Stdout = realStdout
 
-	// failed_gates is the one metric measured here rather than by a gate: it is
-	// about the named gate as a whole, so it is 0 or 1 — `integration` is one
-	// gate, not two — and it is the number the judge's cap applies to. The keys
-	// this map carries are what GateMetrics names; a metric added here is added
-	// there, or a bare invocation tells a caller the gate measures less than it
-	// does.
-	failed := int64(0)
-	if gerr != nil {
-		failed = 1
-	}
 	env := map[string]any{
 		"gate":            name,
 		"measured":        gerr == nil,
 		"elapsed_seconds": time.Since(started).Round(time.Millisecond).Seconds(),
-		"measurements":    map[string]int64{MetricFailedGates: failed},
+		"measurements":    gateMeasurements(gerr),
 	}
 	if gerr != nil {
 		env["detail"] = gerr.Error()
@@ -290,21 +280,50 @@ func MeasureGate(repoRoot, name string) (map[string]any, error) {
 // judge's threshold names.
 const MetricFailedGates = "failed_gates"
 
+// gateMeasurements is what one run measured, and the one declaration of which
+// metrics an envelope from this project carries.
+//
+// failed_gates is the one metric measured here rather than by a gate: it is
+// about the named gate as a whole, so it is 0 or 1 — `integration` is one gate,
+// not two — and it is the number the judge's cap applies to.
+func gateMeasurements(gerr error) map[string]int64 {
+	failed := int64(0)
+	if gerr != nil {
+		failed = 1
+	}
+	return map[string]int64{MetricFailedGates: failed}
+}
+
 // GateMetrics names what an envelope from this project carries — the keys
-// MeasureGate puts under `measurements`.
+// gateMeasurements puts under `measurements`.
 //
 // It exists so a gate asked what it measures answers out of the same
 // declaration the envelope is built from, rather than out of a second list
 // that goes stale the first time a metric is added
 // (docs/gate-contract.md, "The exec line": a bare invocation states the gate's
-// name, what it measures, and the command that runs it).
+// name, what it measures, and the command that runs it). The names are read out
+// of that construction rather than restated beside it, so a metric added there
+// is named here without anyone remembering to — a second literal is a list that
+// goes quietly short, and what it costs is a bare invocation telling a caller
+// the gate measures less than it does. Which run it asks about does not matter,
+// since the keys are the same whatever the gate found, so it asks about one
+// that found nothing wrong.
+//
+// Sorted, because a map is not: a list whose order changed between two bare
+// invocations would read as a gate that measures something different each time.
 //
 // It takes no gate name because every gate here answers the same one metric.
 // The contract declares metrics per gate, and the day base does too this takes
 // the name — narrowing by a name nothing narrows on today would be a parameter
 // no caller could pass wrongly and no reader could check.
 func GateMetrics() []string {
-	return []string{MetricFailedGates}
+	measured := gateMeasurements(nil)
+	names := make([]string, 0, len(measured))
+	for name := range measured {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // GateNames returns every gate name this project answers, concepts and
