@@ -281,6 +281,22 @@ every_outcome_spelling_round_trips() `test {
   GateOutput out = GateOutput.of("linux/amd64", _metrics());
   out.with_group(move group);
   string s = json.encode_string(out)?!;
+
+  // What is on the wire, before what comes back off it. A derived pair writes
+  // the variant's Promise name and reads that same name back, so a round trip
+  // alone passes on `NotRun` — the one spelling the hand-written encode exists
+  // for. Only the text says which of the two a gate in another language meets.
+  bool every_spelling_written = true;
+  int w = 0;
+  while w < spellings.len {
+    string want = spellings[w];
+    if !s.contains("\"outcome\":\"" + want + "\"") {
+      every_spelling_written = false;
+    }
+    w = w + 1;
+  }
+  assert(every_spelling_written, msg: "every outcome is on the wire in its own spelling, not its variant's name: " + s);
+
   GateOutput back = json.decode_string[GateOutput](s.clone())?!;
   MetricGroup[] groups = back.groups();
   MetricGroup read = groups[0];
@@ -383,4 +399,117 @@ a_group_without_members_is_whole() `test {
   MetricGroup read = groups[0];
   assert(read.name == "modules/json", msg: "with its name");
   assert(read.members().len == 0, msg: "and an absent members key is no members, not a refusal");
+}
+
+_sound_member(string move name) GroupMember {
+  return GroupMember.of(move name, Outcome.Pass, none, 0.5);
+}
+
+every_member_of_every_group_is_checked() `test {
+  // Each rule above is exercised on a lone member of a lone group, which a
+  // validate that read only the first member of the first group would satisfy
+  // exactly as well. Here the bad entry is the second member of the second
+  // group, so reaching it at all is what is being asserted — a run that reports
+  // one test file is the small case, and the one an envelope is refused over is
+  // the large one.
+  map[string, MetricValue] wire_metrics = map[string, MetricValue]();
+  MetricGroup first = MetricGroup.of("pkg/wire", move wire_metrics);
+  first.with_member(_sound_member("identity_round_trips"));
+
+  map[string, MetricValue] gate_metrics = map[string, MetricValue]();
+  MetricGroup second = MetricGroup.of("pkg/gate", move gate_metrics);
+  second.with_member(_sound_member("an_envelope_round_trips_whole"));
+  GroupMember bad = GroupMember.of("test_slow", Outcome.Fail, "panic: assertion failed", -0.25);
+  second.with_member(move bad);
+
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  out.with_group(move first);
+  out.with_group(move second);
+
+  bool right_reason = false;
+  out.validate() ? e {
+    right_reason = e.message.contains("negative time")
+                && e.message.contains("test_slow")
+                && e.message.contains("pkg/gate");
+  };
+  assert(right_reason, msg: "the last member of the second group is held to the rule the first member of the first is, and the refusal says which entry it was");
+}
+
+a_member_too_fast_to_time_is_not_a_negative_one() `test {
+  // The rule is on a negative elapsed, and zero is not negative: a thing that
+  // finished inside the timer's resolution reports 0, and refusing that would
+  // leave the envelope unable to carry the fastest thing it measures. Zero is
+  // also the value an absent elapsed must not be confused with, which is the
+  // distinction the second half checks.
+  map[string, MetricValue] m = map[string, MetricValue]();
+  MetricGroup group = MetricGroup.of("tests/std/bool_test.pr", move m);
+  GroupMember instant = GroupMember.of("test_and", Outcome.Pass, none, 0.0);
+  group.with_member(move instant);
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  out.with_group(move group);
+  out.validate()?!;
+
+  string s = json.encode_string(out)?!;
+  GateOutput back = json.decode_string[GateOutput](move s)?!;
+  back.validate()?!;
+  MetricGroup[] groups = back.groups();
+  MetricGroup read = groups[0];
+  GroupMember[] members = read.members();
+  GroupMember timed_at_zero = members[0];
+  f64? timed = timed_at_zero.elapsed();
+  bool present_and_zero = false;
+  if timed is present {
+    present_and_zero = timed == 0.0;
+  }
+  assert(present_and_zero, msg: "a zero duration crosses as a duration, not as the absence that means the subject never timed it");
+}
+
+a_detail_crosses_the_wire_as_written() `test {
+  // What a detail carries is a panic, and a real one has quotes, a colon and a
+  // line break in it. The whole value of the field is that a reader sees what
+  // the gate saw, so a character the encoding mangles on the way is this field
+  // failing at the one job it has — and quietly, since a mangled panic still
+  // reads as a panic.
+  string said = "panic: assertion failed: \"and\" != \"or\"\n  at tests/std/bool_test.pr:42";
+  map[string, MetricValue] m = map[string, MetricValue]();
+  MetricGroup group = MetricGroup.of("tests/std/bool_test.pr", move m);
+  GroupMember failed = GroupMember.of("test_or", Outcome.Fail, said.clone(), 0.5);
+  group.with_member(move failed);
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  out.with_group(move group);
+
+  string s = json.encode_string(out)?!;
+  GateOutput back = json.decode_string[GateOutput](move s)?!;
+  back.validate()?!;
+  MetricGroup[] groups = back.groups();
+  MetricGroup read = groups[0];
+  GroupMember[] members = read.members();
+  GroupMember one = members[0];
+  string? why = one.detail();
+  bool word_for_word = false;
+  if why is present {
+    word_for_word = why == said;
+  }
+  assert(word_for_word, msg: "a panic with quotes and a line break in it is what the reader gets back, character for character");
+}
+
+a_member_key_this_build_has_never_heard_of_is_ignored() `test {
+  // The other half of the additive rule. a_group_without_members_is_whole reads
+  // an envelope written before members existed; this one reads an envelope
+  // written after this build, by a gate whose members carry a field this build
+  // does not know. A reader that refused it would make every later addition to
+  // a member a breaking change, which is the property the versioned wire is for.
+  // The unknown keys sit on both sides of the known ones on purpose: skipping a
+  // value and skipping it by exactly one value are the same thing to a reader
+  // that stops at the first key it recognises.
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"pkg/gate\",\"metrics\":\{\},\"members\":[\{\"retries\":2,\"name\":\"test_or\",\"owner\":\{\"team\":\"std\"\},\"outcome\":\"fail\",\"tags\":[\"slow\"]\}]\}]\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  back.validate()?!;
+  MetricGroup[] groups = back.groups();
+  MetricGroup read = groups[0];
+  GroupMember[] members = read.members();
+  assert(members.len == 1, msg: "the member reads");
+  GroupMember one = members[0];
+  assert(one.name == "test_or", msg: "with the name it was given");
+  assert(_spelling(one) == "fail", msg: "and the outcome beside it, neither displaced by the keys around them");
 }
