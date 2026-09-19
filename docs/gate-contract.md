@@ -140,6 +140,8 @@ An orchestrator that needs progress in a durable record is the one case that mus
 
 The bound in the other direction is on what is *held*, not on what is emitted. stdout is read into memory and parsed, so it is capped; stderr is never held by the gate runner at all, so there is nothing to cap.
 
+**A gate's stdout is at most 1 MiB, and a gate that prints more has not printed an envelope.** The runner stops reading there and reports `broke the contract`, keeping a bounded prefix of what was printed — enough for a human to see what the gate was emitting where measurements were meant — and never the stream, which is worth neither the runner's memory nor the space it would take wherever the run is recorded. **It stops the gate as it stops reading**: a runner that walks away from a pipe a gate is still writing to blocks that gate on a full buffer, which turns an over-talkative gate into a hung one and makes the bound the cause of the wait it exists to prevent. The number bounds what a runner holds rather than what one project chose, so it is the same everywhere and a gate that fits under one runner fits under all of them. It is generous for what an envelope carries — measurements, per-part groups, and members whose `detail` is itself bounded — and an envelope that cannot fit inside it is a gate reporting a transcript rather than what it measured.
+
 One gate run reports **one target**. That is invariant, not a convenience.
 
 An envelope carries a `schema_version`, the `target` its measurements speak for, its `metrics`, any per-part `groups`, and an `incomplete_reason` when it has one.

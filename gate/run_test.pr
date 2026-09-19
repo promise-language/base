@@ -293,10 +293,11 @@ a_drain_ends_at_eof_rather_than_at_the_gate_s_exit() `test {
   args.push(_closes_stdout);
   os.Process child = os.Process.spawn("/bin/sh", args, none, move dir, new_process_group: true)?!;
   os.ProcessOutput out = child.take_stdout()?!;
-  (printed, unreadable) := _drain_within(move out, Instant.now() + Duration.from_secs(5));
+  (printed, unreadable, too_much) := _drain_within(move out, Instant.now() + Duration.from_secs(5));
   assert(printed is present, msg: "the drain ends when the gate closes its stdout");
   assert(printed!.trim() == "ready", msg: "having read everything the gate said, not having given up early");
   assert(!(unreadable is present), msg: "and an orderly close is not a read that failed");
+  assert(!(too_much is present), msg: "nor a gate that printed more than the runner holds");
   assert(child.is_alive, msg: "and the gate that closed it is still running");
   _stop(child);
 }
@@ -319,9 +320,109 @@ a_stop_takes_the_gate_s_descendants_with_it() `test {
   os.Process child = os.Process.spawn("/bin/sh", args, none, none, new_process_group: true)?!;
   os.ProcessOutput out = child.take_stdout()?!;
   _stop(child);
-  (printed, unreadable) := _drain_within(move out, Instant.now() + Duration.from_secs(5));
+  (printed, unreadable, too_much) := _drain_within(move out, Instant.now() + Duration.from_secs(5));
   assert(printed is present, msg: "a stopped gate's descendants are stopped with it, so its stdout reaches EOF");
   assert(!(unreadable is present), msg: "and the pipe closes rather than failing");
+  assert(!(too_much is present), msg: "and a gate that said nothing said nothing past the bound");
+}
+
+// What an endless gate prints, one token per line. A word rather than a
+// character, so a prefix that came back can be recognised as this gate's output
+// and not as whatever else was on the pipe.
+get _endless_token string => "talkative";
+
+_a_gate_that_never_stops_printing() string[] {
+  // /usr/bin/yes prints its argument forever and never closes its stdout, which
+  // is the shape this bound exists for: a runner that reads to EOF reads until
+  // it dies. It is a stock program, so no script is needed and nothing but the
+  // runner decides when the printing stops.
+  string[] args = string[]();
+  args.push(_endless_token.clone());
+  return args;
+}
+
+a_read_that_reaches_the_cap_stops_there() `test {
+  // The read stops at the bound rather than draining what is there. Ten bytes
+  // are on the pipe and four are allowed, so a read that came back with all of
+  // them is the unbounded drain this replaced.
+  string[] args = string[]();
+  args.push("abcdefghij".clone());
+  os.Process child = os.Process.spawn("/bin/echo", args, none, none, new_process_group: true)?!;
+  os.ProcessOutput out = child.take_stdout()?!;
+  (text, capped) := _read_all(out, 4)?!;
+  assert(capped, msg: "a gate that printed past the cap is reported as having done so");
+  assert(text.len == 5, msg: "and the read holds the cap and the one byte that proves it was passed");
+  _stop(child);
+}
+
+a_read_that_exactly_fills_the_cap_is_not_capped() `test {
+  // The inclusive boundary, and the reason the read goes one byte past the cap
+  // rather than stopping on it: a gate that printed exactly what it is allowed
+  // to printed an envelope, and an off-by-one here turns the largest legal
+  // envelope there is into a contract breach nobody can explain.
+  string[] args = string[]();
+  args.push("abc".clone());
+  os.Process child = os.Process.spawn("/bin/echo", args, none, none, new_process_group: true)?!;
+  os.ProcessOutput out = child.take_stdout()?!;
+  (text, capped) := _read_all(out, 4)?!;
+  assert(!capped, msg: "a gate that printed exactly the cap has not printed past it");
+  assert(text == "abc\n", msg: "and everything it said is read, to the last byte the cap allows");
+  _stop(child);
+}
+
+a_drain_that_hits_the_cap_reports_what_the_gate_began_with() `test {
+  // The drain's third answer, reached directly. A gate that never stops printing
+  // never reaches EOF, so this is the one case where neither what it printed nor
+  // a failed read is what comes back — and a runner without the bound sits here
+  // until its deadline, or until its memory runs out, whichever is first.
+  os.Process child = os.Process.spawn("/usr/bin/yes", _a_gate_that_never_stops_printing(), none,
+                                      none, new_process_group: true)?!;
+  os.ProcessOutput out = child.take_stdout()?!;
+  (printed, unreadable, too_much) := _drain_within(move out, Instant.now() + Duration.from_secs(5));
+  assert(!(printed is present), msg: "a gate that never stops printing never reaches the end of its output");
+  assert(!(unreadable is present), msg: "and stopping at the bound is not a read that failed");
+  assert(too_much is present, msg: "the drain reports a gate that printed more than the runner holds");
+  if too_much is present {
+    // Both halves of what survives: bounded, and still worth reading. A prefix
+    // of nothing would satisfy the bound and tell a human nothing about which
+    // gate to go and fix.
+    assert(too_much.len == _kept_prefix, msg: "keeping a prefix of what was printed rather than the stream, and all of the prefix there is room for");
+    assert(too_much.contains(_endless_token), msg: "and enough of it to say what the gate was printing");
+  }
+  // Stopping the gate is the runner's, not the drain's: the drain reads, and
+  // what becomes of a gate that printed too much is decided where every other
+  // outcome is decided.
+  _stop(child);
+  assert(!child.is_alive, msg: "and the gate is left where the runner can still stop it");
+}
+
+a_gate_that_never_stops_printing_breaks_the_contract() `test {
+  // The whole of this bound, end to end. A gate that prints without end has not
+  // printed one JSON object, so the run is a breach rather than a measurement —
+  // and the clock is the other assertion: a runner that kept reading would
+  // report the very same run five seconds later as a timeout, which is the
+  // defect wearing the outcome of a different one.
+  GateSpec g = _spec_lasting("/usr/bin/yes " + _endless_token, Duration.from_secs(5));
+  Instant started = Instant.now();
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  Duration took = started.elapsed();
+  assert(r.outcome.to_string() == "broke the contract",
+         msg: "a gate that printed more than the runner holds printed no envelope");
+  assert(took < Duration.from_secs(2), msg: "and the bound ended the read rather than the deadline ending the gate");
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "and a violation yields no measurements at all");
+  int? code = r.exit_code;
+  assert(!(code is present), msg: "the gate was stopped, so it never chose an exit code to report");
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what the gate did");
+  if why is present {
+    assert(why.contains("probe"), msg: "naming the gate: " + why);
+    assert(why.contains("printed more than"), msg: "and what it did rather than what was wrong with its JSON: " + why);
+    assert(why.contains(_endless_token), msg: "and what it was printing instead of an envelope: " + why);
+    // The half of this issue a correct outcome alone would not catch: the
+    // megabyte the runner read must not travel out with the report.
+    assert(why.len < _kept_prefix + 200, msg: "carrying a prefix rather than the stream: " + why.len.to_string() + " bytes");
+  }
 }
 
 a_gate_that_has_already_finished_is_reported_past_its_deadline() `test {
