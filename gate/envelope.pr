@@ -21,10 +21,12 @@ type GateError is error `public `doc("A gate envelope that cannot be accepted.")
 enum MetricValue `public `serializable `clone `doc("One measurement. Integers stay integers: a test count encoded as a float is a count nobody can compare exactly. The measured type is written beside the value rather than left to the reader, because a bare 5 is an int and a float alike and JSON cannot tell them apart — so the envelope round-trips, and a value that disagrees with what the manifest declared is a mismatch a reader can name instead of a widening it cannot see.") {
   Int(int value),
   Float(f64 value),
+  Bool(bool value),
 
   to_string(this) string `public `doc("The measurement as text, in its own type.") => match this {
     Int(v) => v.to_string(),
     Float(v) => v.to_string(),
+    Bool(v) => v.to_string(),
   };
 }
 

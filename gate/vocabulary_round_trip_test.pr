@@ -31,6 +31,12 @@ format_and_parse_round_trip() `test {
   MetricType k_back = scan[MetricType](kb.to_string())?!;
   assert(k_back.to_string() == k.to_string(), msg: "a metric type survives format then parse");
 
+  MetricType b = scan[MetricType]("bool")?!;
+  Builder bb = Builder();
+  b.format(bb)?!;
+  MetricType b_back = scan[MetricType](bb.to_string())?!;
+  assert(b_back.to_string() == b.to_string(), msg: "a bool metric type survives format then parse");
+
   Direction d = scan[Direction]("at_most")?!;
   Builder db = Builder();
   d.format(db)?!;

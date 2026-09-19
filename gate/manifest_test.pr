@@ -107,16 +107,21 @@ direction_refuses_both_motion_words_and_names_the_bounds() `test {
   assert(down_refused, msg: "both motion words are gone, not just the one an example used");
 }
 
-// A synonym of a declared spelling rather than `bool`: the type the contract
-// declares and this set lacks is promise-language/base#7, and a test asserting
-// that one is refused would cement the gap rather than guard the boundary.
+// A synonym of a declared spelling: the three the contract declares are all in
+// the set, so what is outside it is a spelling of one of them nobody agreed to.
 a_metric_type_outside_the_set_is_refused() `test {
   bool right_reason = false;
   MetricType k = scan[MetricType]("integer") ? e {
-    right_reason = e.message.contains("expected int or float");
+    right_reason = e.message.contains("expected int, float, or bool");
     MetricType.Int;
   };
   assert(right_reason, msg: "a synonym of a declared spelling is refused and the set is named");
+}
+
+a_bool_metric_type_reads_and_writes_its_wire_spelling() `test {
+  MetricType k = scan[MetricType]("bool")?!;
+  string spelling = k.to_string();
+  assert(spelling == "bool", msg: "the third type the contract declares is in the set, spelled as the wire spells it");
 }
 
 // `enforce` rather than `pending` for the same reason: the missing mode is
