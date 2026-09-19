@@ -370,6 +370,35 @@ a_read_that_exactly_fills_the_cap_is_not_capped() `test {
   _stop(child);
 }
 
+a_read_holds_the_cap_across_more_than_one_read() `test {
+  // The bound is on everything the gate printed, not on each read of it. The
+  // two tests above cannot see the difference: they fill the cap on the first
+  // read, where nothing is held yet and a clamp that forgot to subtract what is
+  // already held computes the very same number. Twenty thousand bytes through a
+  // four-kilobyte buffer is several reads, so a clamp reckoning from zero each
+  // time overshoots the bound by most of one of them and this is where it says
+  // so.
+  string[] args = string[]();
+  args.push("-c".clone());
+  string line = "yes " + _endless_token + " | head -n 2000";
+  args.push(move line);
+  os.Process child = os.Process.spawn("/bin/sh", args, none, none, new_process_group: true)?!;
+  os.ProcessOutput out = child.take_stdout()?!;
+  (text, capped) := _read_all(out, 9000)?!;
+  assert(capped, msg: "twenty thousand bytes is past a nine-thousand-byte bound");
+  assert(text.len == 9001,
+         msg: "and what is held is the bound and the byte that proves it was passed, not the bound plus whatever the last read happened to bring: " + text.len.to_string());
+  _stop(child);
+}
+
+a_prefix_shorter_than_the_bound_is_kept_whole() `test {
+  // The branch a run never reaches: _head is only ever asked about a gate that
+  // printed past the cap, which is by construction longer than the prefix. What
+  // it states is that the prefix is a bound and not a width, and a run cannot
+  // state it — so a rewrite that always sliced would be caught here or nowhere.
+  assert(_head("brief") == "brief", msg: "text already inside the bound comes back whole rather than padded to it");
+}
+
 a_drain_that_hits_the_cap_reports_what_the_gate_began_with() `test {
   // The drain's third answer, reached directly. A gate that never stops printing
   // never reaches EOF, so this is the one case where neither what it printed nor
@@ -418,11 +447,57 @@ a_gate_that_never_stops_printing_breaks_the_contract() `test {
   if why is present {
     assert(why.contains("probe"), msg: "naming the gate: " + why);
     assert(why.contains("printed more than"), msg: "and what it did rather than what was wrong with its JSON: " + why);
+    assert(why.contains(_stdout_cap.to_string()), msg: "and the bound it went past, which is the one number that says how much is too much: " + why);
     assert(why.contains(_endless_token), msg: "and what it was printing instead of an envelope: " + why);
     // The half of this issue a correct outcome alone would not catch: the
     // megabyte the runner read must not travel out with the report.
     assert(why.len < _kept_prefix + 200, msg: "carrying a prefix rather than the stream: " + why.len.to_string() + " bytes");
   }
+}
+
+get _over_talks string => "gate-over-talks.sh";
+
+_a_gate_that_over_talks_and_then_goes_quiet() string {
+  // A gate that prints past the bound and then stops printing without exiting.
+  // Both halves are load-bearing, and neither stock program has both: printing
+  // past the bound is what ends the read, and going quiet for a long time
+  // afterwards is what makes stopping the gate observable at all. A gate still
+  // writing into a pipe whose read end has closed dies of that by itself, so it
+  // cannot tell a runner that stopped it from one that walked away.
+  string dir = os.temp_dir;
+  io.File.write_content(dir + "/" + _over_talks,
+                        "yes " + _endless_token + " | head -n 150000\n"
+                        + "sleep 30\n")?!;
+  return dir;
+}
+
+a_gate_stopped_at_the_bound_does_not_hold_the_runner() `test {
+  // The half of this bound the outcome does not show, and the one the bound can
+  // defeat by itself — docs/gate-contract.md, "The envelope": it stops the gate
+  // as it stops reading. A runner that stops reading and does not stop the gate
+  // waits for it anyway, because os.Process reaps what it spawned when the
+  // handle goes out of scope, so the bound becomes the cause of the wait it
+  // exists to prevent: thirty seconds here, and a gate's own lifetime in
+  // general.
+  //
+  // The clock is the assertion because nothing else can be. The gate is thirty
+  // seconds of silence against a budget it never reaches, so a runner that came
+  // back at once stopped it and one that came back later was held by it — and
+  // by the time anything else could be asked, the wait has already ended and
+  // the gate is gone either way.
+  //
+  // The gate that never stops printing cannot stand in for this one. It dies of
+  // SIGPIPE the moment the read end closes, so it comes back quickly whether or
+  // not anything stopped it.
+  string dir = _a_gate_that_over_talks_and_then_goes_quiet();
+  GateSpec g = _spec_lasting("/bin/sh " + _over_talks, Duration.from_secs(5));
+  Instant started = Instant.now();
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  Duration took = started.elapsed();
+  assert(r.outcome.to_string() == "broke the contract",
+         msg: "the bound is what ended this read, so this is the gate that had to be stopped");
+  assert(took < Duration.from_secs(2),
+         msg: "and the runner stopped the gate rather than waiting out the thirty seconds it had left: " + took.to_string());
 }
 
 a_gate_that_has_already_finished_is_reported_past_its_deadline() `test {
