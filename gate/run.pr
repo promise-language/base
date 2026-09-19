@@ -18,7 +18,7 @@ use json;
 
 use os;
 
-type RunError is error `public `doc("A gate that printed something that is not an envelope. What became of a run is reported as its outcome rather than raised, so this says only what was wrong with what the gate printed, and run_gate turns it into the outcome the contract gives it.") {
+type RunError is error `doc("A gate that printed something that is not an envelope. What became of a run is reported as its outcome rather than raised, so this says only what was wrong with what the gate printed, and run_gate turns it into the outcome the contract gives it — which is also why this is not public: it travels from the decode to that one handler and no further, and no caller of this module can ever be handed one.") {
 }
 
 _argv(string line) string[] `doc("Splits an exec line into program and arguments on whitespace. Deliberately not a shell grammar, and not an incomplete one either: no quoting is supported, because supporting quoting is the first step toward supporting everything else a shell does, and the contract requires that no host's shell can change what a line means.") {

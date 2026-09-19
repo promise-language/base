@@ -142,6 +142,10 @@ output_that_is_not_an_envelope_breaks_the_contract() `test {
   assert(code is present, msg: "the process ran, so the kernel's number is kept for diagnosis");
   string? why = r.detail();
   assert(why is present, msg: "and what was wrong with what it printed is said, once, for a human");
+  if why is present {
+    assert(why.contains("not an envelope"),
+           msg: "naming the half of the breach this was, which the outcome does not: " + why);
+  }
 }
 
 an_envelope_that_fails_validation_breaks_the_contract() `test {
@@ -156,6 +160,16 @@ an_envelope_that_fails_validation_breaks_the_contract() `test {
          msg: "an envelope that cannot mean what it says is a breach, not a measurement");
   GateOutput? printed = r.output();
   assert(!(printed is present), msg: "and nothing it carried is reported");
+  // Which of the two breaches it was is the detail's whole job here, since the
+  // outcome deliberately does not distinguish them. A detail that said only
+  // "broke the contract" would satisfy every other assertion in both tests and
+  // leave a human with a gate to diagnose and nothing to diagnose it from.
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what was wrong with what the gate printed");
+  if why is present {
+    assert(why.contains("must say why it measured less than usual"),
+           msg: "carrying what validate refused it for, rather than a decode's complaint: " + why);
+  }
 }
 
 a_gate_that_never_ends_is_killed_at_its_timeout() `test {
