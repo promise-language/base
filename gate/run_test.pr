@@ -1,8 +1,18 @@
+use os;
+
 _spec(string move command) GateSpec {
+  return _spec_lasting(move command, Duration.from_secs(60));
+}
+
+_spec_lasting(string move command, Duration timeout) GateSpec {
   VcsTransition[] b = VcsTransition[]();
   b.push(VcsTransition.Commit);
   return GateSpec.of("probe", OsCommand.of(move command), none, HostOs[](), none, HostArch[](),
-                     Duration.from_secs(60), move b, none, Exclusion[](), string[](), MetricSpec[]());
+                     timeout, move b, none, Exclusion[](), string[](), MetricSpec[]());
+}
+
+_printing_an_envelope(Duration timeout) GateSpec {
+  return _spec_lasting("/bin/echo " + "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\"test_count\":\{\"type\":\"Int\",\"value\":17703\}\},\"groups\":[]\}", timeout);
 }
 
 an_exec_line_splits_into_program_and_arguments() `test {
@@ -23,7 +33,7 @@ a_run_reports_which_gate_it_was() `test {
 }
 
 a_gate_that_prints_an_envelope_is_read() `test {
-  GateSpec g = _spec("/bin/echo " + "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\"test_count\":\{\"type\":\"Int\",\"value\":17703\}\},\"groups\":[]\}");
+  GateSpec g = _printing_an_envelope(Duration.from_secs(60));
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
   GateOutput? printed = r.output();
   assert(printed is present, msg: "the envelope came back");
@@ -58,6 +68,61 @@ output_that_is_not_an_envelope_is_refused() `test {
     GateRun.of("probe", 0, none);
   };
   assert(right_reason, msg: "a gate printing something else is a contract breach, not a verdict");
+}
+
+a_gate_that_never_ends_is_killed_at_its_timeout() `test {
+  // /bin/cat blocks on a stdin nobody writes to: it prints nothing, holds its
+  // stdout open and never exits, so the drain and the wait are both on it and
+  // only the deadline ends either. A runner that did not enforce the timeout
+  // would hang here rather than fail here.
+  GateSpec g = _spec_lasting("/bin/cat", Duration.from_millis(200));
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
+    right_reason = e.message.contains("probe") && e.message.contains("exceeded its declared timeout");
+    GateRun.of("probe", 0, none);
+  };
+  assert(right_reason, msg: "a gate that outlasts its timeout is stopped and named, not waited on");
+}
+
+a_gate_that_would_finish_late_is_stopped_when_its_time_runs_out() `test {
+  // Three seconds of work against a fifth of a second of budget. The clock is
+  // the assertion that matters: a runner that let the gate finish would report
+  // the very same error three seconds later, which is the defect, not the fix.
+  GateSpec g = _spec_lasting("/bin/sleep 3", Duration.from_millis(200));
+  Instant started = Instant.now();
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
+    right_reason = e.message.contains("exceeded its declared timeout");
+    GateRun.of("probe", 0, none);
+  };
+  Duration took = started.elapsed();
+  assert(right_reason, msg: "the gate was stopped for running too long");
+  assert(took < Duration.from_secs(2), msg: "and stopped near its deadline rather than running to completion");
+}
+
+a_wait_that_outlasts_the_deadline_gives_up_on_the_gate() `test {
+  // The deadline has to bound the wait as well as the read, and the case where
+  // only the wait is left is a gate that has closed its stdout and not exited.
+  // No stock program does that, so the wait is reached directly here — through
+  // the same function a run reaches it through, not a second copy of it.
+  string[] args = string[]();
+  args.push("3".clone());
+  os.Process child = os.Process.spawn("/bin/sleep", args, none, none, new_process_group: true)?!;
+  Instant started = Instant.now();
+  int? code = _exit_within(move child, Instant.now() + Duration.from_millis(200));
+  Duration took = started.elapsed();
+  assert(!(code is present), msg: "a wait that runs out of time reports no exit code");
+  assert(took < Duration.from_secs(2), msg: "and gives up at its deadline rather than waiting the process out");
+}
+
+a_gate_that_finishes_inside_its_timeout_is_left_alone() `test {
+  // The other side of the deadline: a short budget a gate comfortably meets is
+  // not a reason to stop it, and the envelope still arrives.
+  GateSpec g = _printing_an_envelope(Duration.from_secs(2));
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  GateOutput? printed = r.output();
+  assert(printed is present, msg: "a gate inside its budget is read rather than stopped");
+  assert(r.exit_code == 0, msg: "and the exit code is the one the kernel gave it");
 }
 
 a_gate_with_no_command_for_this_host_is_refused() `test {
