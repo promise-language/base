@@ -49,6 +49,19 @@ any_matches_every_host() `test {
   assert(!HostOs.Linux.matches(HostOs.Darwin), msg: "and nothing else");
 }
 
+// `x86_64` and `amd64` name one architecture, which is the `macOS` case on the
+// other axis: accepted, it would put two spellings of one machine into
+// circulation, and a gate filtered to the losing one would run nowhere.
+host_arch_refuses_a_spelling_outside_the_set() `test {
+  bool right_reason = false;
+  HostArch a = scan[HostArch]("x86_64") ? e {
+    right_reason = e.message.contains("expected amd64 or arm64");
+    HostArch.Amd64;
+  };
+  assert(right_reason, msg: "the everyday spelling of amd64 is refused and the set is named");
+  assert(scan[HostArch]("arm64")?!.to_string() == "arm64", msg: "the canonical spelling round-trips");
+}
+
 blocks_come_from_the_vcs_vocabulary() `test {
   assert(scan[VcsTransition]("push:origin")?!.to_string() == "push:origin", msg: "a declared transition round-trips");
   bool right_reason = false;
@@ -92,6 +105,30 @@ direction_refuses_both_motion_words_and_names_the_bounds() `test {
     Direction.AtMost;
   };
   assert(down_refused, msg: "both motion words are gone, not just the one an example used");
+}
+
+// A synonym of a declared spelling rather than `bool`: the type the contract
+// declares and this set lacks is promise-language/base#7, and a test asserting
+// that one is refused would cement the gap rather than guard the boundary.
+a_metric_type_outside_the_set_is_refused() `test {
+  bool right_reason = false;
+  MetricType k = scan[MetricType]("integer") ? e {
+    right_reason = e.message.contains("expected int or float");
+    MetricType.Int;
+  };
+  assert(right_reason, msg: "a synonym of a declared spelling is refused and the set is named");
+}
+
+// `enforce` rather than `pending` for the same reason: the missing mode is
+// promise-language/base#14, and the change that adds it must not have to delete
+// a test to do so.
+a_metric_mode_outside_the_set_is_refused() `test {
+  bool right_reason = false;
+  MetricMode m = scan[MetricMode]("enforce") ? e {
+    right_reason = e.message.contains("expected enforced or informational");
+    MetricMode.Enforced;
+  };
+  assert(right_reason, msg: "a near-miss spelling is refused and the set is named");
 }
 
 a_manifest_accepts_a_precondition_and_a_monitor() `test {
