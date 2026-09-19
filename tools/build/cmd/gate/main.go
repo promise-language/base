@@ -88,9 +88,16 @@ func main() {
 	// wrap `bin/gate tested` would read its 0 as a pass. Refusing before
 	// measuring keeps the two readings from ever coexisting, and costs a person
 	// nothing — `bin/run <name>` is their path, and it is the one that judges.
+	//
+	// What it says is the three facts the contract asks for
+	// (docs/gate-contract.md, "The exec line"): the gate's name, what it
+	// measures, and the command that runs it. Naming the metrics is what makes
+	// this worth reading rather than a scolding — someone who typed the wrong
+	// thing learns what this gate would have told them, and whether it is the
+	// one they wanted.
 	if !envelope {
-		fmt.Fprintf(os.Stderr, "gate: refusing to measure %q without --envelope; "+
-			"run `bin/run %s` for a result meant for a person\n", args[0], args[0])
+		fmt.Fprintf(os.Stderr, "%s — measures %s\n\n  bin/run %s\n",
+			args[0], strings.Join(common.GateMetrics(), ", "), args[0])
 		os.Exit(1)
 	}
 

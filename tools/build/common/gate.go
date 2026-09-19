@@ -266,7 +266,10 @@ func MeasureGate(repoRoot, name string) (map[string]any, error) {
 
 	// failed_gates is the one metric measured here rather than by a gate: it is
 	// about the named gate as a whole, so it is 0 or 1 — `integration` is one
-	// gate, not two — and it is the number the judge's cap applies to.
+	// gate, not two — and it is the number the judge's cap applies to. The keys
+	// this map carries are what GateMetrics names; a metric added here is added
+	// there, or a bare invocation tells a caller the gate measures less than it
+	// does.
 	failed := int64(0)
 	if gerr != nil {
 		failed = 1
@@ -286,6 +289,23 @@ func MeasureGate(repoRoot, name string) (map[string]any, error) {
 // MetricFailedGates is the metric every envelope here carries, and the one the
 // judge's threshold names.
 const MetricFailedGates = "failed_gates"
+
+// GateMetrics names what an envelope from this project carries — the keys
+// MeasureGate puts under `measurements`.
+//
+// It exists so a gate asked what it measures answers out of the same
+// declaration the envelope is built from, rather than out of a second list
+// that goes stale the first time a metric is added
+// (docs/gate-contract.md, "The exec line": a bare invocation states the gate's
+// name, what it measures, and the command that runs it).
+//
+// It takes no gate name because every gate here answers the same one metric.
+// The contract declares metrics per gate, and the day base does too this takes
+// the name — narrowing by a name nothing narrows on today would be a parameter
+// no caller could pass wrongly and no reader could check.
+func GateMetrics() []string {
+	return []string{MetricFailedGates}
+}
 
 // GateNames returns every gate name this project answers, concepts and
 // instances — what `bin/gate --list` and `bin/run --list` both answer with.

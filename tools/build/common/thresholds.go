@@ -71,13 +71,22 @@ func (t Threshold) Satisfied(measured int64) bool {
 	return measured <= t.Cap
 }
 
-// Describe states the term the way a person reads it.
-func (t Threshold) Describe(name string) string {
+// Term states the bound the way a person reads it, without the metric's name:
+// `at most 0`. It is what goes beside a measurement in a column of its own, so
+// the name is not printed twice on one line.
+func (t Threshold) Term() string {
 	word := "at most"
 	if t.Direction == DirectionAtLeast {
 		word = "at least"
 	}
-	return fmt.Sprintf("%s %s %d", name, word, t.Cap)
+	return fmt.Sprintf("%s %d", word, t.Cap)
+}
+
+// Describe states the term the way a person reads it, named. One wording, from
+// Term: a sentence and a column that spelled the same bound differently would
+// be two readings of one number.
+func (t Threshold) Describe(name string) string {
+	return name + " " + t.Term()
 }
 
 // ApplyThresholds judges measurements against terms and returns the terms that

@@ -28,8 +28,51 @@ _an_envelope_incomplete_with_no_reason() string {
   return "\{" + _envelope_body + ",\"incomplete_reason\":\"\"\}";
 }
 
+get _prints_envelope string => "gate-prints-envelope.sh";
+
 _printing_an_envelope(Duration timeout) GateSpec {
-  return _spec_lasting("/bin/echo " + _an_envelope(), timeout);
+  return _spec_lasting("/bin/sh " + _prints_envelope, timeout);
+}
+
+_a_gate_that_prints_an_envelope() string {
+  // A conforming gate, and the reason it cannot be /bin/echo any more: the
+  // runner appends its flag to every line it runs, and echo would print the
+  // flag as part of its output, turning a valid envelope into text that is not
+  // one. A script takes the extra argument and is indifferent to it, which is
+  // all this fixture needs to be: what a real gate does with the flag is print
+  // an envelope, and that is what this does. A script is also the contract's
+  // own answer for a gate needing anything a bare exec line cannot spell
+  // (docs/gate-contract.md, "The exec line").
+  string dir = _a_worktree("prints-envelope");
+  io.File.write_content(dir + "/" + _prints_envelope, "echo '" + _an_envelope() + "'\n")?!;
+  return dir;
+}
+
+get _prints_incomplete string => "gate-prints-incomplete.sh";
+
+_a_gate_that_prints_an_envelope_that_cannot_mean_what_it_says() string {
+  string dir = _a_worktree("envelope-refused");
+  io.File.write_content(dir + "/" + _prints_incomplete,
+                        "echo '" + _an_envelope_incomplete_with_no_reason() + "'\n")?!;
+  return dir;
+}
+
+get _records_argv string => "gate-records-argv.sh";
+
+get _recorded_argv string => "argv.txt";
+
+_a_gate_that_records_its_arguments() string {
+  // A gate that writes down the argv it was given and then measures. What it
+  // writes is ignored by the project along with the script itself, so the
+  // worktree this measures is one the project called clean and the run is a
+  // `measured` rather than the modification it would otherwise be.
+  string dir = _a_worktree("records-argv");
+  io.File.write_content(dir + "/.gitignore", _recorded_argv + "\n" + _records_argv + "\n")?!;
+  _committed(dir, "what the fixture ignores");
+  io.File.write_content(dir + "/" + _records_argv,
+                        "echo \"$@\" > " + _recorded_argv + "\n"
+                        + "echo '" + _an_envelope() + "'\n")?!;
+  return dir;
 }
 
 get _closes_stdout string => "gate-closes-stdout.sh";
@@ -78,6 +121,30 @@ _a_gate_that_closes_its_stdout() string {
   return dir;
 }
 
+get _never_ends string => "gate-never-ends.sh";
+
+_a_gate_that_never_ends() string {
+  // cat blocks on a stdin nobody writes to: it prints nothing, holds its stdout
+  // open, and never exits, so the drain and the wait are both on it and only
+  // the deadline ends either. It is reached through a script rather than named
+  // on the exec line because the runner appends its flag to every line, and cat
+  // refuses an unknown option rather than ignoring it — which would end the
+  // gate at once and leave this testing something else.
+  string dir = _a_worktree("never-ends");
+  io.File.write_content(dir + "/" + _never_ends, "exec cat\n")?!;
+  return dir;
+}
+
+get _finishes_late string => "gate-finishes-late.sh";
+
+_a_gate_that_finishes_late() string {
+  // Three seconds of work, in a script for the same reason as above: sleep
+  // refuses the appended flag as a bad time interval and exits at once.
+  string dir = _a_worktree("finishes-late");
+  io.File.write_content(dir + "/" + _finishes_late, "sleep 3\n")?!;
+  return dir;
+}
+
 an_exec_line_splits_into_program_and_arguments() `test {
   string[] argv = _argv("bin/gate test --wasm");
   assert(argv.len == 3, msg: "program plus two arguments");
@@ -98,15 +165,52 @@ a_run_reports_which_gate_it_was() `test {
   assert(code! == 0, msg: "and arguments reached exec without a shell in between");
 }
 
-a_gate_that_prints_an_envelope_is_read() `test {
-  // The one run here that is given no directory, which is what makes this the
-  // test of what "none" means: the subject recorded and the directory the gate
-  // is spawned in are both the runner's own. Every other run below builds a
-  // worktree of its own instead, because a test that did this incidentally
-  // would take whatever the developer's checkout happened to be doing as the
-  // gate's subject (docs/org/engineering-guide.md, "Testing").
-  GateSpec g = _printing_an_envelope(Duration.from_secs(60));
+the_runner_appends_the_envelope_flag_after_what_the_manifest_declared() `test {
+  // docs/gate-contract.md, "The exec line": `bin/gate test --wasm` is run as
+  // `bin/gate test --wasm --envelope`. Both halves are asserted, because they
+  // fail separately. That the flag arrived at all is what lets a gate tell a
+  // runner's invocation from a person's, and everything the contract says about
+  // a bare invocation rests on it. That it arrived *last* is the only rule that
+  // works without parsing the exec line, and a fixture that merely printed its
+  // envelope when flagged would prove the first and nothing about the second.
+  string dir = _a_gate_that_records_its_arguments();
+  GateSpec g = _spec("/bin/sh " + _records_argv + " test --wasm");
+  string recorded = dir + "/" + _recorded_argv;
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "measured",
+         msg: "the gate ran and printed its envelope, so what it wrote down is what the runner gave it");
+  string argv = io.File.read_content(recorded)?!;
+  assert(argv.trim() == "test --wasm " + _envelope_flag,
+         msg: "the runner appends its flag last, after what the manifest declared: " + argv.trim());
+}
+
+a_run_given_no_directory_takes_the_runner_s_own() `test {
+  // What "none" means: the subject recorded and the directory the gate is
+  // spawned in are both the runner's own. The observable is that the run comes
+  // back at all — Subject.recorded raises on a directory that is not a
+  // worktree, so a runner that resolved an absent directory to nothing would
+  // fail here rather than report. It is the only run here that does this:
+  // every other one builds a worktree of its own, because a test that took the
+  // runner's directory incidentally would take whatever the developer's
+  // checkout happened to be doing as the gate's subject
+  // (docs/org/engineering-guide.md, "Testing").
+  //
+  // /usr/bin/true is the gate because it writes nothing, so the runner's own
+  // checkout reads the same before and after, and because it is indifferent to
+  // the flag the runner appends. It prints no envelope, so the run died; what
+  // it measured is not what this is about.
+  GateSpec g = _spec("/usr/bin/true");
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.outcome.to_string() == "died", msg: "a gate that printed nothing measured nothing");
+  int? code = r.exit_code;
+  assert(code is present, msg: "and the run happened in the runner's own worktree rather than raising");
+  assert(code! == 0, msg: "with the code the kernel gave it");
+}
+
+a_gate_that_prints_an_envelope_is_read() `test {
+  string dir = _a_gate_that_prints_an_envelope();
+  GateSpec g = _printing_an_envelope(Duration.from_secs(60));
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
   assert(r.outcome.to_string() == "measured", msg: "a gate that completed and printed a valid envelope measured");
   GateOutput? printed = r.output();
   assert(printed is present, msg: "the envelope came back");
@@ -185,8 +289,8 @@ an_envelope_that_fails_validation_breaks_the_contract() `test {
   // rather than the RunError a failed decode raises — two error types, one
   // fact about the gate, and a caller that had to tell them apart would be
   // matching on text again.
-  string dir = _a_worktree("envelope-refused");
-  GateSpec g = _spec("/bin/echo " + _an_envelope_incomplete_with_no_reason());
+  string dir = _a_gate_that_prints_an_envelope_that_cannot_mean_what_it_says();
+  GateSpec g = _spec("/bin/sh " + _prints_incomplete);
   GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
   assert(r.outcome.to_string() == "broke the contract",
          msg: "an envelope that cannot mean what it says is a breach, not a measurement");
@@ -378,12 +482,12 @@ a_run_in_a_directory_that_is_not_a_worktree_raises() `test {
 }
 
 a_gate_that_never_ends_is_killed_at_its_timeout() `test {
-  // /bin/cat blocks on a stdin nobody writes to: it prints nothing, holds its
-  // stdout open and never exits, so the drain and the wait are both on it and
-  // only the deadline ends either. A runner that did not enforce the timeout
-  // would hang here rather than fail here.
-  string dir = _a_worktree("never-ends");
-  GateSpec g = _spec_lasting("/bin/cat", Duration.from_millis(200));
+  // A gate that prints nothing, holds its stdout open and never exits, so the
+  // drain and the wait are both on it and only the deadline ends either. A
+  // runner that did not enforce the timeout would hang here rather than fail
+  // here.
+  string dir = _a_gate_that_never_ends();
+  GateSpec g = _spec_lasting("/bin/sh " + _never_ends, Duration.from_millis(200));
   GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
   assert(r.outcome.to_string() == "timed out", msg: "a gate that outlasts its timeout is stopped, not waited on");
   int? code = r.exit_code;
@@ -403,8 +507,8 @@ a_gate_that_would_finish_late_is_stopped_when_its_time_runs_out() `test {
   // Three seconds of work against a fifth of a second of budget. The clock is
   // the assertion that matters: a runner that let the gate finish would report
   // the very same error three seconds later, which is the defect, not the fix.
-  string dir = _a_worktree("finishes-late");
-  GateSpec g = _spec_lasting("/bin/sleep 3", Duration.from_millis(200));
+  string dir = _a_gate_that_finishes_late();
+  GateSpec g = _spec_lasting("/bin/sh " + _finishes_late, Duration.from_millis(200));
   Instant started = Instant.now();
   GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
   Duration took = started.elapsed();
@@ -728,7 +832,7 @@ a_stopped_gate_is_dead_and_reaped() `test {
 a_gate_that_finishes_inside_its_timeout_is_left_alone() `test {
   // The other side of the deadline: a short budget a gate comfortably meets is
   // not a reason to stop it, and the envelope still arrives.
-  string dir = _a_worktree("inside-its-timeout");
+  string dir = _a_gate_that_prints_an_envelope();
   GateSpec g = _printing_an_envelope(Duration.from_secs(2));
   GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
   GateOutput? printed = r.output();
