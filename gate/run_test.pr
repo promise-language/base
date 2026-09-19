@@ -184,6 +184,51 @@ the_runner_appends_the_envelope_flag_after_what_the_manifest_declared() `test {
          msg: "the runner appends its flag last, after what the manifest declared: " + argv.trim());
 }
 
+the_envelope_flag_is_spelled_as_the_contract_spells_it() `test {
+  // docs/gate-contract.md, "The exec line": "**The runner appends
+  // `--envelope`.** ... the flag is protocol, not project configuration, so it
+  // has one spelling everywhere". One spelling is the whole of what makes it
+  // protocol rather than configuration, and it is the half no other test here
+  // can reach: every one of them compares what a gate was handed against this
+  // getter, so a runner that appended `-envelope` or `--json` would satisfy all
+  // of them while every gate in every project went on refusing the flag it was
+  // actually sent. This is the same tripwire the outcome spellings have, one
+  // value over.
+  assert(_envelope_flag == "--envelope",
+         msg: "the flag the runner appends is the one the contract names: " + _envelope_flag);
+}
+
+a_line_that_declares_no_arguments_of_its_own_is_still_given_the_flag() `test {
+  // The degenerate half of "after whatever the manifest declared": a line that
+  // declared nothing, where the flag is the whole argument list rather than the
+  // last of several. It is a real shape — a gate whose program needs no
+  // argument to know what it measures writes exactly this line — and the test
+  // above cannot reach it, because the script it names is itself an argument.
+  //
+  // /bin/cat is the probe because its two behaviours are far apart and neither
+  // needs a fixture. Given the flag it refuses an option it does not know and
+  // exits 1 at once, having printed nothing: a gate that died. Given nothing it
+  // blocks on a stdin no one writes to and is stopped at the deadline, which is
+  // what a_gate_that_never_ends_is_killed_at_its_timeout already relies on. So
+  // an appender that skipped a line with no arguments of its own reports `timed
+  // out` with no exit code here, half a second later, rather than failing on a
+  // number.
+  GateSpec g = _spec_lasting("/bin/cat", Duration.from_millis(500));
+  string dir = _a_worktree("declares-no-arguments");
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "died",
+         msg: "the gate was given the flag, refused it and ended, rather than waiting on a stdin nobody wrote to");
+  int? code = r.exit_code;
+  assert(code is present, msg: "so it chose an exit code rather than being stopped at a deadline");
+  // Non-zero rather than the 1 this host's cat happens to choose: the number is
+  // cat's and not the runner's, and pinning it would fail on a host that spells
+  // a usage error differently. That it is not zero is the runner's, and it is
+  // load-bearing — a host handing the child an empty stdin would end cat at
+  // once with a 0, which is `died` with a code present and would pass every
+  // assertion above whether or not the flag was ever appended.
+  assert(code! != 0, msg: "with the code it gives an option it does not know: " + code!.to_string());
+}
+
 a_run_given_no_directory_takes_the_runner_s_own() `test {
   // What "none" means: the subject recorded and the directory the gate is
   // spawned in are both the runner's own. The observable is that the run comes
