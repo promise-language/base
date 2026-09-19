@@ -47,6 +47,19 @@ _a_gate_that_measures_and_fails() string {
   return dir;
 }
 
+get _measures_then_overruns string => "gate-measures-then-overruns.sh";
+
+_a_gate_that_measures_and_then_overruns() string {
+  // A gate that prints a whole envelope, closes its stdout so the drain is
+  // satisfied by it, and then keeps running until it is stopped. The one shape
+  // that reaches the deadline with a readable envelope already in the runner's
+  // hand, which is what makes discarding it a decision rather than an absence.
+  string dir = os.temp_dir;
+  io.File.write_content(dir + "/" + _measures_then_overruns,
+                        "echo '" + _an_envelope() + "'\nexec 1>&-\nsleep 30\n")?!;
+  return dir;
+}
+
 _a_gate_that_closes_its_stdout() string {
   // A gate that stops talking and keeps running is not a stock program, and the
   // exec line cannot spell one: it splits on whitespace and supports no quoting,
@@ -112,6 +125,15 @@ a_gate_that_exits_clean_having_printed_nothing_died() `test {
   int? code = r.exit_code;
   assert(code is present, msg: "the process's own code is recorded as the kernel gave it");
   assert(code! == 0, msg: "and it is the zero that must not be read as a result");
+  string? why = r.detail();
+  assert(why is present, msg: "and the run says why it amounted to nothing");
+  if why is present {
+    // The pairing this outcome exists for: an exit code of zero and a run that
+    // measured nothing. The detail is the only thing standing between a reader
+    // and that zero, so a `died` that explained nothing here would be read back
+    // as the success the gate falsely claimed.
+    assert(why.contains("without printing an envelope"), msg: "and what the silence amounted to: " + why);
+  }
 }
 
 a_failing_gate_is_a_successful_run() `test {
@@ -242,6 +264,24 @@ a_gate_that_closes_its_stdout_and_keeps_running_is_stopped_at_its_timeout() `tes
   assert(took < Duration.from_secs(2), msg: "and is stopped at the deadline rather than waited out");
 }
 
+a_gate_that_printed_an_envelope_and_then_overran_measured_nothing() `test {
+  // A run cut short measured nothing, whatever it printed before the clock ran
+  // out — so the outcome is `timed out` and the envelope in hand is dropped.
+  // Every other timeout test uses a gate that printed nothing an envelope could
+  // be made of, so a runner that reported `measured` off the text it happened to
+  // have drained, or carried that envelope out beside a `timed out`, would pass
+  // all of them. The distinction is the contract's: whether the gate spoke is a
+  // different question from whether the run finished, and only one of them is
+  // what a caller is told here.
+  string dir = _a_gate_that_measures_and_then_overruns();
+  GateSpec g = _spec_lasting("/bin/sh " + _measures_then_overruns, Duration.from_millis(200));
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "timed out",
+         msg: "a gate stopped at its deadline timed out, whatever it had printed first");
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "and reports no measurements, because a run that was cut short measured nothing");
+}
+
 a_drain_ends_at_eof_rather_than_at_the_gate_s_exit() `test {
   // What makes two deadline sites necessary rather than one, and the premise the
   // test above rests on: the drain is satisfied by the last writer closing the
@@ -355,6 +395,14 @@ a_gate_with_no_command_for_this_host_could_not_start() `test {
   assert(!(code is present), msg: "and with no process there was never an exit code to have");
   GateOutput? printed = r.output();
   assert(!(printed is present), msg: "nor an envelope");
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what was wrong with the manifest");
+  if why is present {
+    // Which host had no line is carried nowhere else: the run names its gate and
+    // nothing else, so a detail that omitted it would leave a reader holding a
+    // manifest that declares a command, and no way to tell which one was asked for.
+    assert(why.contains("linux"), msg: "naming the host it declared no command for: " + why);
+  }
 }
 
 an_empty_command_line_could_not_start() `test {
