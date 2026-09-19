@@ -1,8 +1,18 @@
 // The gate manifest: what a project declares about its own gates.
 //
-// Reactor discovers gates by running the project's listing command and reading
-// this back. The project owns every value here; Reactor owns only what it does
-// with them — scheduling, arena assignment, ratchet state.
+// **The contract this implements is [docs/gate-contract.md](../docs/gate-contract.md)**,
+// and that document is where it is stated: that a project declares its gates by
+// printing this and nothing registers them anywhere else, that every value in one
+// is the project's to state while Reactor owns only what it does with them, what
+// a metric declares, and the rules a manifest must satisfy to be accepted at all.
+// Restating any of that here would be a second copy to keep in sync, and the
+// contract is language-neutral while this file is one language's implementation
+// of it.
+//
+// What is here and not there: the types a Promise consumer reads a manifest
+// through. Two of their shapes are the platform's rather than the contract's — a
+// hand-written `GateSpec.clone` and a list of per-OS overrides where a map
+// belongs — and each is argued where it sits.
 
 use wire "../wire";
 
