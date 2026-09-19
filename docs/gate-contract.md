@@ -148,6 +148,18 @@ An envelope carries a `schema_version`, the `target` its measurements speak for,
 
 **Groups say where.** A total says a ratchet moved; a group says which package, file or suite it moved in, which is the difference between a bisect and a glance. A group carries the same metric names the manifest declared, scoped to one part of the run.
 
+**A member says which, and what it said.** A group may carry **members**: named entries inside it, each with an outcome. A group says which file regressed; a member says which test, and what it said when it did. That is the paragraph above one level further down, and without it a reader who knows a file got worse still re-runs the suite to find out how — the glance the group exists to give, failing at the last step. It has to be the envelope that carries this, because the information exists only inside the gate at the moment it runs: an envelope with nowhere to put it discards it at the boundary, and no consumer can recover it afterwards.
+
+A member carries a `name` — the thing as the subject names it — an `outcome`, a `detail` when a bad outcome needs explaining, and an `elapsed` when the subject timed it. A member with no name names nothing and is refused; a `detail` and an `elapsed` are each carried in order to say something, so an empty detail and a negative elapsed are refused for the reason a blank `incomplete_reason` is.
+
+**`outcome` comes from a closed set**, for the reason the manifest's sets are closed ([Closed vocabularies](#closed-vocabularies)): `pass`, `fail`, `timeout`, `leak`, `memory`, `excluded`, `not-run`. The distinctions past `pass` and `fail` earn their place by being acted on differently. **`excluded` is a decision, not a failure** — a test deliberately not run for this target — and a reader who cannot see it will eventually re-add the test and rediscover why it was excluded. **`not-run` is a different fact from failing**: the suite never reached it, so nothing is known about it, and recording that as a failure blames the subject for something about the run.
+
+**A member's outcome is a fact about the named thing, never a verdict about the run.** A test that failed is an observation exactly as `test_failures: 3` is one, and what either amounts to is decided against terms the gate does not hold, [outside the tree](#where-the-verdict-is-made). An envelope still reports no verdict.
+
+**`detail` is bounded**, and bounded means the assertion or the panic and where it was, not the transcript around it — the unbounded copy is what a watching reader already gets on stderr. **`elapsed` is what the metrics map cannot give**: a per-part total says a suite got slower, and only a per-member duration says which one of its members did.
+
+**A group need not have members.** Not every part of a run has named things inside it, and a gate reporting only its per-part totals has reported what it measured.
+
 **Completeness is the absence of a reason.** A run that measured less than usual — a suite skipped for a missing tool, a subset deliberately selected — carries the reason it did. A run that measured everything carries nothing. There is no separate completeness flag, because a flag is a second field a reader could find disagreeing with the reason sitting beside it. An incomplete run with nothing to say is the one state an envelope cannot mean, and is refused.
 
 **Which is why the reason is worth the trouble to carry.** Honest numbers that understate the subject are indistinguishable from a regression unless the run says so, and what a consumer must then do about it is under [Caps and baselines](#caps-and-baselines).

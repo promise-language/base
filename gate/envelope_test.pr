@@ -157,3 +157,203 @@ a_sound_envelope_validates() `test {
   back.validate()?!;
   assert(back.target == "linux/amd64", msg: "and a whole one passes through untouched");
 }
+
+_one_test_file() MetricGroup {
+  map[string, MetricValue] m = map[string, MetricValue]();
+  m["test_count"] = MetricValue.Int(3);
+  m["test_failures"] = MetricValue.Int(1);
+  MetricGroup group = MetricGroup.of("tests/std/bool_test.pr", move m);
+  GroupMember passed = GroupMember.of("test_and", Outcome.Pass, none, 0.001);
+  group.with_member(move passed);
+  GroupMember failed = GroupMember.of("test_or", Outcome.Fail, "panic: assertion failed: 1 != 2", 0.002);
+  group.with_member(move failed);
+  GroupMember excluded = GroupMember.of("test_wasm", Outcome.Excluded, none, none);
+  group.with_member(move excluded);
+  return group;
+}
+
+a_group_carries_its_members() `test {
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  out.with_group(_one_test_file());
+  string s = json.encode_string(out)?!;
+  assert(s.contains("\"name\":\"test_or\""), msg: "a member is named: " + s);
+  assert(s.contains("\"outcome\":\"fail\""), msg: "and says how it turned out, in the wire spelling: " + s);
+  assert(s.contains("panic: assertion failed"), msg: "and carries what explained it — which the metrics map has nowhere to put: " + s);
+  assert(s.contains("\"elapsed\":0.002"), msg: "and how long it took, which is what finds the one test that got slow: " + s);
+  assert(s.contains("\"outcome\":\"excluded\""), msg: "a test not meant for this target is carried rather than dropped: " + s);
+  assert(!s.contains("null"), msg: "an absent detail or elapsed is an absent key, not a null: " + s);
+}
+
+members_survive_the_wire() `test {
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  out.with_group(_one_test_file());
+  string s = json.encode_string(out)?!;
+  GateOutput back = json.decode_string[GateOutput](move s)?!;
+  back.validate()?!;
+  MetricGroup[] groups = back.groups();
+  assert(groups.len == 1, msg: "the group survives");
+  MetricGroup group = groups[0];
+  GroupMember[] members = group.members();
+  assert(members.len == 3, msg: "with all three of its members");
+
+  GroupMember first = members[0];
+  assert(first.name == "test_and", msg: "in the order the gate reported them");
+  assert(first.outcome.to_string() == "pass", msg: "with its outcome");
+  string? no_detail = first.detail();
+  assert(!(no_detail is present), msg: "a pass that needed no explaining carries none");
+  // A tolerance rather than equality, and the gap is not this type's: the json
+  // module's number parser is one ULP high on 0.001 and 0.002 (#38), so no
+  // float survives this wire exactly. When that closes this asserts ==.
+  f64? timed = first.elapsed();
+  bool timed_right = false;
+  if timed is present {
+    f64 off = timed - 0.001;
+    timed_right = off < 0.000001 && off > -0.000001;
+  }
+  assert(timed_right, msg: "and its duration, as measured");
+
+  GroupMember second = members[1];
+  assert(second.outcome.to_string() == "fail", msg: "the failure is still a failure");
+  string? why = second.detail();
+  bool explained = false;
+  if why is present {
+    explained = why.contains("assertion failed");
+  }
+  assert(explained, msg: "and the panic that explains it survived the boundary it used to be discarded at");
+
+  GroupMember third = members[2];
+  assert(third.outcome.to_string() == "excluded", msg: "an exclusion is a decision, and it comes back as one");
+  f64? untimed = third.elapsed();
+  assert(!(untimed is present), msg: "and a thing the subject never timed reports no duration rather than zero");
+}
+
+_every_outcome() Outcome[] {
+  Outcome[] all = Outcome[]();
+  all.push(Outcome.Pass);
+  all.push(Outcome.Fail);
+  all.push(Outcome.Timeout);
+  all.push(Outcome.Leak);
+  all.push(Outcome.Memory);
+  all.push(Outcome.Excluded);
+  all.push(Outcome.NotRun);
+  return all;
+}
+
+_every_spelling() string[] {
+  string[] all = string[]();
+  all.push("pass");
+  all.push("fail");
+  all.push("timeout");
+  all.push("leak");
+  all.push("memory");
+  all.push("excluded");
+  all.push("not-run");
+  return all;
+}
+
+every_outcome_spelling_round_trips() `test {
+  // encode writes the spelling and decode reads it back — the pair is the
+  // contract, and it is written by hand so that a gate in another language
+  // meets `not-run` rather than the variant's Promise name.
+  Outcome[] all = _every_outcome();
+  string[] spellings = _every_spelling();
+  map[string, MetricValue] empty = map[string, MetricValue]();
+  MetricGroup group = MetricGroup.of("every-outcome", move empty);
+  int i = 0;
+  while i < all.len {
+    Outcome one = all[i];
+    string spelling = spellings[i];
+    GroupMember m = GroupMember.of(move spelling, move one, none, none);
+    group.with_member(move m);
+    i = i + 1;
+  }
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  out.with_group(move group);
+  string s = json.encode_string(out)?!;
+  GateOutput back = json.decode_string[GateOutput](s.clone())?!;
+  MetricGroup[] groups = back.groups();
+  MetricGroup read = groups[0];
+  GroupMember[] members = read.members();
+  assert(members.len == 7, msg: "every outcome crossed the wire: " + s);
+  bool every_one = true;
+  int j = 0;
+  while j < members.len {
+    GroupMember m = members[j];
+    string want = spellings[j];
+    string got = m.outcome.to_string();
+    if got != want {
+      every_one = false;
+    }
+    if m.name != want {
+      every_one = false;
+    }
+    j = j + 1;
+  }
+  assert(every_one, msg: "and each came back as the outcome it went out as: " + s);
+}
+
+an_unknown_outcome_is_refused() `test {
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"pkg/gate\",\"metrics\":\{\},\"members\":[\{\"name\":\"test_or\",\"outcome\":\"passed\"\}]\}]\}";
+  bool right_reason = false;
+  GateOutput back = json.decode_string[GateOutput](move wire) ? e {
+    right_reason = e.message.contains("unknown outcome 'passed'");
+    GateOutput.of("linux/amd64", _metrics());
+  };
+  assert(right_reason, msg: "a spelling outside the closed set is refused at the boundary, not missed at a lookup");
+  assert(back.groups().len == 0, msg: "and nothing of the refused envelope is read");
+}
+
+a_member_with_no_name_is_refused() `test {
+  // Written as wire rather than built: a derived decode constructs the type
+  // field by field rather than through a factory (promise-language/promise#45),
+  // so validate is where a decoded member meets the rule.
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"pkg/gate\",\"metrics\":\{\},\"members\":[\{\"name\":\"\",\"outcome\":\"fail\"\}]\}]\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  bool right_reason = false;
+  back.validate() ? e {
+    right_reason = e.message.contains("has no name") && e.message.contains("pkg/gate");
+  };
+  assert(right_reason, msg: "a member that names nothing says nothing, and the message names the group it was in");
+}
+
+a_detail_with_nothing_to_say_is_refused() `test {
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"pkg/gate\",\"metrics\":\{\},\"members\":[\{\"name\":\"test_or\",\"outcome\":\"fail\",\"detail\":\"\"\}]\}]\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  bool right_reason = false;
+  back.validate() ? e {
+    right_reason = e.message.contains("explains nothing") && e.message.contains("test_or");
+  };
+  assert(right_reason, msg: "a detail is carried to explain a bad outcome, so an empty one is the state it cannot mean");
+}
+
+a_negative_elapsed_is_refused() `test {
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"pkg/gate\",\"metrics\":\{\},\"members\":[\{\"name\":\"test_or\",\"outcome\":\"pass\",\"elapsed\":-1.0\}]\}]\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  bool right_reason = false;
+  back.validate() ? e {
+    right_reason = e.message.contains("negative time") && e.message.contains("test_or");
+  };
+  assert(right_reason, msg: "nothing took less than no time");
+}
+
+a_group_without_members_is_whole() `test {
+  map[string, MetricValue] m = map[string, MetricValue]();
+  m["test_count"] = MetricValue.Int(164);
+  GateOutput out = GateOutput.of("linux/amd64", _metrics());
+  out.with_group(MetricGroup.of("modules/json", move m));
+  out.validate()?!;
+  MetricGroup[] built = out.groups();
+  MetricGroup one = built[0];
+  assert(one.members().len == 0, msg: "a gate reporting only its per-part totals is reporting what it measured");
+
+  // The wire evolves additively, so an envelope from a gate that has never
+  // heard of members reads here as a group with none, rather than failing.
+  string wire = "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\},\"groups\":[\{\"name\":\"modules/json\",\"metrics\":\{\}\}]\}";
+  GateOutput back = json.decode_string[GateOutput](move wire)?!;
+  back.validate()?!;
+  MetricGroup[] groups = back.groups();
+  assert(groups.len == 1, msg: "the group still reads");
+  MetricGroup read = groups[0];
+  assert(read.name == "modules/json", msg: "with its name");
+  assert(read.members().len == 0, msg: "and an absent members key is no members, not a refusal");
+}

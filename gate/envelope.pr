@@ -35,17 +35,108 @@ enum MetricValue `public `serializable `clone `doc("One measurement. Integers st
   };
 }
 
-type MetricGroup `public `serializable `clone `doc("Measurements for one part of a run — a package, a file, a suite. A total says a ratchet moved; a group says where, which is the difference between a bisect and a glance.") {
+enum Outcome `public `clone `doc("How one named thing inside a group turned out. Closed for the reason a manifest's vocabularies are: a `skipped` written where `excluded` was meant does not error, it misses a lookup and is counted as something else. Seven rather than two, because a reader acts on the distinctions differently — `excluded` is a deliberate \"not for this target\" and is not a failure, and `not-run` says the suite never reached it, which is a different fact about the subject from failing.") {
+  Pass,
+  Fail,
+  Timeout,
+  Leak,
+  Memory,
+  Excluded,
+  NotRun,
+
+  encode!(Encoder ~e) `public `doc("Writes the wire spelling. Written rather than derived, which is the one place this envelope departs from its own rule: a derived enum writes its variant's Promise name, and `NotRun` is not a spelling a gate written in another language would guess at — the envelope is the surface this contract is satisfied by printing JSON to.") {
+    e.encode_string(this.to_string())?^;
+  }
+
+  decode!(Decoder ~d) Outcome `factory `public `doc("Reads the wire spelling, and refuses one outside the set here rather than at a lookup that quietly misses. The envelope is decoded before it is validated, so this is the boundary an unknown outcome meets.") {
+    string name = d.decode_string()?^;
+    if name == "pass" { return Outcome.Pass; }
+    if name == "fail" { return Outcome.Fail; }
+    if name == "timeout" { return Outcome.Timeout; }
+    if name == "leak" { return Outcome.Leak; }
+    if name == "memory" { return Outcome.Memory; }
+    if name == "excluded" { return Outcome.Excluded; }
+    if name == "not-run" { return Outcome.NotRun; }
+    raise DecodeError(field: "outcome", position: none,
+                      message: "unknown outcome '" + name + "': expected pass, fail, timeout, leak, memory, excluded, or not-run");
+  }
+
+  to_string(this) string `public `doc("The wire spelling — what encode writes and decode reads back.") => match this {
+    Pass => "pass",
+    Fail => "fail",
+    Timeout => "timeout",
+    Leak => "leak",
+    Memory => "memory",
+    Excluded => "excluded",
+    NotRun => "not-run",
+  };
+}
+
+type GroupMember `public `serializable `clone `doc("One named thing inside a group, and how it turned out. A group says which file regressed; a member says which test, and what it said when it did — the same argument one level further down, and the one a reader who knows a file got worse would otherwise re-run the suite to answer.") {
+  string _name `final `key("name");
+  Outcome _outcome `final `key("outcome");
+  string? _detail `final `key("detail");
+  f64? _elapsed `final `key("elapsed");
+
+  of(string move name, Outcome move outcome, string? move detail, f64? move elapsed) Self `factory `public `doc("Builds one member. The detail explains a bad outcome and is absent when there is nothing to explain; the elapsed is absent when the subject did not time it.") {
+    return GroupMember(_name: move name, _outcome: move outcome, _detail: move detail, _elapsed: move elapsed);
+  }
+
+  get name string `public `doc("The thing, as the subject names it.") => this._name;
+
+  get outcome Outcome `public `doc("How it turned out. A fact about this named thing and never a verdict about the run: what the measurements amount to is decided outside the gate, against terms the gate does not hold.") => this._outcome;
+
+  detail(this) string? `public `doc("What explained a bad outcome — a panic, an assertion message — absent when nothing did. Bounded: the assertion and where it was, not the transcript around it, which is what stderr already carries. Allocates.") {
+    if this._detail is present {
+      return this._detail!.clone();
+    }
+    return none;
+  }
+
+  elapsed(this) f64? `public `doc("How long this one thing took, in seconds, absent when the subject did not time it. This is what the metrics map cannot give: a per-part total says a suite got slower, and a per-member duration says which one did.") {
+    if this._elapsed is present {
+      return this._elapsed!;
+    }
+    return none;
+  }
+}
+
+type MetricGroup `public `serializable `clone `doc("Measurements for one part of a run — a package, a file, a suite. A total says a ratchet moved; a group says where, which is the difference between a bisect and a glance. Its members say which named things inside it turned out how.") {
   string _name `final `key("name");
   map[string, MetricValue] _metrics `final `key("metrics");
+  GroupMember[] _members `final `key("members");
 
-  of(string move name, map[string, MetricValue] move metrics) Self `factory `public `doc("Builds a named group of measurements.") {
-    return MetricGroup(_name: move name, _metrics: move metrics);
+  of(string move name, map[string, MetricValue] move metrics) Self `factory `public `doc("Builds a named group of measurements. Members are added afterwards, because a group need not have any: not every part of a run has named things inside it, and a gate reporting only per-part totals has reported what it measured.") {
+    return MetricGroup(_name: move name, _metrics: move metrics, _members: GroupMember[]());
   }
 
   get name string `public `doc("What this group measures.") => this._name;
 
   get metrics map[string, MetricValue] `public `doc("The measurements, keyed by the names the manifest declared.") => this._metrics.clone();
+
+  members(this) GroupMember[] `public `doc("The named things inside this group, empty when the gate reports only its per-part totals. Allocates.") => this._members.clone();
+
+  with_member(~this, GroupMember move member) `public `doc("Adds one named thing and how it turned out.") {
+    this._members.push(move member);
+  }
+}
+
+_validate_member!(string group, GroupMember member) `doc("Raises on a member that cannot mean what it says. Every message names the group and the member, because an envelope refused without saying which entry did it sends a reader back through the whole run.") {
+  if member.name.is_empty {
+    raise GateError(message: "a member of group '" + group + "' has no name, so it names nothing");
+  }
+  string? detail = member.detail();
+  if detail is present {
+    if detail.is_empty {
+      raise GateError(message: "member '" + member.name + "' of group '" + group + "' carries an empty detail, which explains nothing");
+    }
+  }
+  f64? elapsed = member.elapsed();
+  if elapsed is present {
+    if elapsed < 0.0 {
+      raise GateError(message: "member '" + member.name + "' of group '" + group + "' took a negative time");
+    }
+  }
 }
 
 type GateOutput `public `serializable `clone `doc("One gate run's result. Written as a single JSON object on stdout; human-readable progress belongs on stderr, which Reactor never parses.") {
@@ -82,6 +173,21 @@ type GateOutput `public `serializable `clone `doc("One gate run's result. Writte
       if this._incomplete_reason!.is_empty {
         raise GateError(message: "an incomplete run must say why it measured less than usual");
       }
+    }
+    int i = 0;
+    while i < this._groups.len {
+      // Bound once rather than indexed repeatedly: a method call on an array
+      // index leaks the element copy (promise-language/promise#57).
+      MetricGroup group = this._groups[i];
+      string group_name = group.name;
+      GroupMember[] members = group.members();
+      int j = 0;
+      while j < members.len {
+        GroupMember member = members[j];
+        _validate_member(group_name, member)?^;
+        j = j + 1;
+      }
+      i = i + 1;
     }
   }
 
