@@ -109,10 +109,41 @@ a_wait_that_outlasts_the_deadline_gives_up_on_the_gate() `test {
   args.push("3".clone());
   os.Process child = os.Process.spawn("/bin/sleep", args, none, none, new_process_group: true)?!;
   Instant started = Instant.now();
-  int? code = _exit_within(move child, Instant.now() + Duration.from_millis(200));
+  int? code = _exit_within(child, Instant.now() + Duration.from_millis(200))?!;
   Duration took = started.elapsed();
   assert(!(code is present), msg: "a wait that runs out of time reports no exit code");
   assert(took < Duration.from_secs(2), msg: "and gives up at its deadline rather than waiting the process out");
+  // The child is still the caller's, which is the point of giving up this way
+  // rather than handing it to a wait that cannot let go of it.
+  _stop(child);
+  assert(!child.is_alive, msg: "and leaves the gate where the runner can still stop it");
+}
+
+a_wait_that_finishes_inside_the_deadline_reports_the_code() `test {
+  // The same wait on a gate that ends in time: it must report the kernel's code
+  // rather than the deadline's silence, and must not sit out the budget waiting
+  // to be sure. /usr/bin/false is chosen over true so a code of zero cannot be
+  // an uninitialised value passing for an answer.
+  string[] args = string[]();
+  os.Process child = os.Process.spawn("/usr/bin/false", args, none, none, new_process_group: true)?!;
+  Instant started = Instant.now();
+  int? code = _exit_within(child, Instant.now() + Duration.from_secs(30))?!;
+  Duration took = started.elapsed();
+  assert(code is present, msg: "a gate that exits in time reports an exit code");
+  assert(code! == 1, msg: "and it is the code the kernel gave it");
+  assert(took < Duration.from_secs(2), msg: "and the wait ends with the gate, not with the deadline");
+}
+
+a_stopped_gate_is_dead_and_reaped() `test {
+  // What both deadline paths end at, asserted on its own: stopping is the thing
+  // the timeout exists to do, and a run that reported a timeout while leaving
+  // the gate running would satisfy every other test here. /bin/cat never exits
+  // on its own, so its death is the stop's doing and nothing else's.
+  string[] args = string[]();
+  os.Process child = os.Process.spawn("/bin/cat", args, none, none, new_process_group: true)?!;
+  assert(child.is_alive, msg: "the gate is running before it is stopped");
+  _stop(child);
+  assert(!child.is_alive, msg: "a stopped gate is not still running");
 }
 
 a_gate_that_finishes_inside_its_timeout_is_left_alone() `test {

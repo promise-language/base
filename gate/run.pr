@@ -102,12 +102,15 @@ run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `p
     raise RunError(message: _overran(spec.name, spec.timeout));
   }
 
-  int? code = _exit_within(move child, deadline);
+  int? code = _exit_within(child, deadline)?^;
   string name = spec.name;
   if reported := code {
     GateOutput? envelope = _envelope(name, move text)?^;
     return GateRun.of(move name, reported, move envelope);
   }
+  // The gate closed its stdout and then kept running, which is the other place
+  // the deadline can land. It ends the same way the drain's does.
+  _stop(child);
   raise RunError(message: _overran(spec.name, spec.timeout));
 }
 
@@ -156,38 +159,17 @@ _read_into(os.ProcessOutput move pipe, channel[string] read, channel[string] unr
   read.send(move printed);
 }
 
-_exit_within(os.Process move child, Instant deadline) int? `doc("Waits for a gate to exit, giving up at the deadline. Reports the exit code, or nothing when the deadline came first. The wait runs on a goroutine for the reason the read does — waitpid cannot be interrupted either — and the child goes with it, which is what makes the wait abandonable and also what puts kill out of reach here. That is why this is the second half of a run rather than a race alongside the drain: while the runner still holds the child it can kill it outright, and only once the wait owns it is asking all that is left.") {
-  int pid = child.id;
-  channel[int] exited = channel[int](capacity: 1);
-  go _reap(move child, exited);
-
-  int? code = none;
-  while true {
-    select {
-      c := <-exited:
-        code = c;
-      default:
-    }
-    if (code is present) || Instant.now() >= deadline {
-      break;
+_exit_within!(os.Process ~child, Instant deadline) int? `doc("Waits for a gate to exit, giving up at the deadline. Reports the exit code, or nothing when the deadline came first and the gate is still running. Unlike the drain this keeps the child rather than handing it to a goroutine: os.Process.wait blocks without bound, so the exit is noticed by asking whether the process is still alive and the wait is made only once the answer is no — at which point it collects a status rather than waiting for one. What that buys is the caller still holding the child when the deadline lands, and holding it is the whole of what stopping a gate takes: SIGKILL is reachable only through the Process that spawned it, so a wait that had taken the child could ask the gate to stop and never make it.") {
+  while child.is_alive {
+    if Instant.now() >= deadline {
+      return none;
     }
     sleep(_poll_interval);
   }
-  if !(code is present) {
-    _ask_to_stop(pid);
-  }
-  return code;
+  return child.wait()?^;
 }
 
-_reap(os.Process move child, channel[int] exited) `doc("Waits for a gate to exit, reports the code, and reaps it. A wait that could not be read reports the kernel's own failure code rather than saying nothing: a runner listening for this would otherwise sit out the whole deadline for a process that is already gone.") {
-  int code = child.wait() ? e {
-    exited.send(-1);
-    return;
-  };
-  exited.send(code);
-}
-
-_stop!(os.Process ~child) `doc("Ends a gate that has run out of time, and reaps it. The group is asked to stop first: the gate's children inherited its stdout, so a drain waiting on that pipe outlives the gate itself unless they go with it. Then the gate is killed outright, because a deadline is not a request. The wait that follows is the one this runner may make on its own thread — SIGKILL cannot be ignored, so it is bounded where the others are not. A signal that fails is swallowed: a gate that has already died is not a failure to stop it.") {
+_stop(os.Process ~child) `doc("Ends a gate that has run out of time, and reaps it. The group is asked to stop first: the gate's children inherited its stdout, so a drain waiting on that pipe outlives the gate itself unless they go with it. Asked rather than told, because os.Signal carries no SIGKILL and so nothing can force a group (promise-language/promise#86). Then the gate itself is killed outright, because a deadline is not a request, and that one signal cannot be declined — which is what makes the wait after it bounded where a wait on a live gate is not. A signal that fails is swallowed: a gate that has already died is not a failure to stop it.") {
   child.signal_group(os.Signal.Terminate)? {
   };
   child.kill()? {
@@ -196,19 +178,11 @@ _stop!(os.Process ~child) `doc("Ends a gate that has run out of time, and reaps 
   };
 }
 
-_ask_to_stop(int pid) `doc("Asks a gate that outlasted its deadline while the runner was waiting on it to stop. Asks rather than kills: the wait owns the child by then, and kill — the one signal a gate cannot decline — needs it, which is a gap in what os.Signal can carry rather than a choice made here (promise-language/promise#86). The pid cannot have been reused, because the child is this runner's own and stays unreaped until its wait collects it.") {
-  os.ProcessRef stray = os.ProcessRef.attach(pid) ? e {
-    return;
-  };
-  stray.signal(os.Signal.Terminate)? {
-  };
-}
-
 get _poll_interval Duration `doc("How often the runner looks again at a gate it is already waiting on. Not the gate's deadline, which the manifest declares — this is the granularity at which a deadline is noticed, and the cost of noticing it. os.Process offers neither a wait with a deadline nor an interruptible read (promise-language/promise#86), so bounding either is a matter of looking again: short enough that a gate that has finished is not visibly held up, long enough that a gate running for half an hour is not a million wakeups. Delete the loops this paces when a deadline can be waited on directly.") {
   return Duration.from_millis(5);
 }
 
-_overran(string gate, Duration timeout) string `doc("What the runner says about a gate it stopped for running too long. One spelling, because the read and the wait are two places a deadline can land and one fact about the gate. It reports the fact and not the signal: which signal the gate got depends on which of the two it was, and that is the runner's business rather than the reader's.") {
+_overran(string gate, Duration timeout) string `doc("What the runner says about a gate it stopped for running too long. One spelling, because the read and the wait are two places a deadline can land and one fact about the gate: it overran, and it was stopped. What it does not say is how, because that is the runner's business rather than the reader's — a reader acts on the deadline, not on the signal that enforced it.") {
   return "gate '" + gate + "' exceeded its declared timeout of " + timeout.to_string();
 }
 
