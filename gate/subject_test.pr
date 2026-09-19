@@ -1,0 +1,244 @@
+use io;
+
+use os;
+
+// A fresh worktree for one test to be the subject of. The process id is in the
+// path deliberately: a fixture that reused a directory from an earlier run would
+// have that run's leftovers in the reading taken *before* the gate, so a test
+// whose gate rewrites a file already rewritten would see no difference and pass
+// for the wrong reason.
+//
+// This lives here rather than in run_test.pr because it makes the thing this
+// file is about, and run_test.pr uses this one rather than keeping a second.
+_a_worktree(string name) string {
+  string dir = os.temp_dir + "/gate-subject-" + os.process_id.to_string() + "-" + name;
+  io.Dir.make_all(dir)?!;
+  string[] init = ["init", "--quiet"];
+  os.ProcessResult started = _git(dir, init)?!;
+  assert(started.exit_code == 0, msg: "the fixture's worktree was created: " + started.stderr);
+  return dir;
+}
+
+// Commits whatever the worktree currently holds. The identity is passed per
+// invocation rather than written into the repository's config, because a fixture
+// that configured the machine would be a fixture with a side effect outside the
+// directory it was given. It is the noreply form every commit here carries, so
+// that a fixture's identity and a real one are not two spellings of what an
+// address in this tree may be. gpgsign is turned off for the same reason in
+// reverse: a developer who signs every commit by habit would otherwise have
+// these tests ask them for a passphrase.
+_committed(string dir, string message) {
+  string[] add = ["add", "-A"];
+  os.ProcessResult staged = _git(dir, add)?!;
+  assert(staged.exit_code == 0, msg: "the fixture staged what it wrote: " + staged.stderr);
+  string[] commit = ["-c", "user.name=gate fixture", "-c", "user.email=gate-fixture@users.noreply.github.com",
+                     "-c", "commit.gpgsign=false", "commit", "--quiet", "--no-verify", "-m", message.clone()];
+  os.ProcessResult made = _git(dir, commit)?!;
+  assert(made.exit_code == 0, msg: "the fixture committed what it staged: " + made.stderr);
+}
+
+an_unchanged_worktree_reports_no_difference() `test {
+  // The reading a whole gate run rests on: two recordings of a tree nobody
+  // touched compare equal. A check that reported a difference here would make
+  // every honest gate a contract breach, which is the expensive direction.
+  string dir = _a_worktree("unchanged");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+
+  Subject before = Subject.recorded(dir)?!;
+  Subject after = Subject.recorded(dir)?!;
+  string? difference = after.changed_from(before);
+  assert(!(difference is present), msg: "a tree nobody touched differs from itself in nothing");
+}
+
+a_modified_tracked_file_is_a_difference() `test {
+  string dir = _a_worktree("modified");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/subject.txt", "repaired\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "a tracked file rewritten under the runner is a difference");
+  if difference is present {
+    // Which path moved is the whole of what a difference is worth. One that
+    // said only "the tree changed" would satisfy every other assertion here and
+    // leave a human with a worktree to diff by hand.
+    assert(difference.contains("subject.txt"), msg: "naming the path: " + difference);
+  }
+}
+
+an_untracked_file_is_a_difference() `test {
+  // A gate dropping a report into the worktree root is a violation by the
+  // letter, and correctly so: ignoring a project's own outputs is the project's
+  // job, and a runner that guessed which stray files were meant would be back to
+  // appealing to intent.
+  string dir = _a_worktree("untracked");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/report.json", "\{\}\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "a file left behind in the worktree is a difference");
+  if difference is present {
+    assert(difference.contains("report.json"), msg: "naming what was left behind: " + difference);
+  }
+}
+
+a_file_inside_an_already_untracked_directory_is_a_difference() `test {
+  // Why the reading asks for every untracked file rather than accepting git's
+  // default. `--untracked-files=normal` collapses an untracked directory to one
+  // entry, so a gate writing a second file into a directory that was already
+  // there prints the identical line twice and the difference disappears.
+  string dir = _a_worktree("untracked-deeper");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+  io.Dir.make_all(dir + "/scratch")?!;
+  io.File.write_content(dir + "/scratch/first.txt", "already here\n")?!;
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/scratch/second.txt", "left behind\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "a second file in an untracked directory is still a difference");
+  if difference is present {
+    assert(difference.contains("second.txt"), msg: "naming the file rather than the directory: " + difference);
+  }
+}
+
+an_ignored_file_is_not_a_difference() `test {
+  // The other half of the same rule. A gate may write elsewhere — a build cache,
+  // a report — and where "elsewhere" is, is the project's to declare. A check
+  // that refused this would refuse every gate that compiles anything.
+  string dir = _a_worktree("ignored");
+  io.File.write_content(dir + "/.gitignore", "out/\n")?!;
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject and what it ignores");
+
+  Subject before = Subject.recorded(dir)?!;
+  io.Dir.make_all(dir + "/out")?!;
+  io.File.write_content(dir + "/out/report.json", "\{\}\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(!(difference is present), msg: "a path the project ignores is outside the subject");
+}
+
+a_commit_leaves_the_status_clean_and_is_still_a_difference() `test {
+  // The reading that the worktree alone cannot make. A gate that rewrites a
+  // tracked file and then commits it leaves `git status` saying exactly what it
+  // said before — nothing — so a check built on the status is satisfied by the
+  // one gate that has changed the most. Only the tree hash sees it.
+  string dir = _a_worktree("committed");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/subject.txt", "repaired\n")?!;
+  _committed(dir, "the repair");
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "a clean status is not the same claim as an unchanged tree");
+  if difference is present {
+    assert(difference.contains("HEAD's tree moved"), msg: "and the difference says what moved: " + difference);
+  }
+}
+
+a_repository_with_no_commits_can_be_observed() `test {
+  // An unborn HEAD is a real state of a real worktree, not a reading that
+  // failed, so it records rather than raising — and the first commit made after
+  // it compares as the difference it is. A runner that treated `rev-parse`'s
+  // refusal as an error would refuse to run a gate in a freshly initialized
+  // arena.
+  string dir = _a_worktree("unborn");
+  Subject before = Subject.recorded(dir)?!;
+
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the first commit");
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "the first commit moves the tree from nothing to something");
+  if difference is present {
+    assert(difference.contains("no commit"), msg: "and says the tree it moved from was never made: " + difference);
+  }
+}
+
+a_modification_that_was_restored_is_not_seen() `test {
+  // The limit, asserted so that it is a decision on the record rather than
+  // something a later reader discovers. Before-and-after cannot see a gate that
+  // put back what it took, and this check does not claim to: it catches the
+  // careless case, which is the common one, and a gate built to evade it is a
+  // gate an agent wrote to pass itself — which is what the thresholds boundary
+  // is for, not this one.
+  string dir = _a_worktree("restored");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+
+  Subject before = Subject.recorded(dir)?!;
+  io.File.write_content(dir + "/subject.txt", "repaired\n")?!;
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(!(difference is present), msg: "a modification that was put back leaves nothing for a comparison to find");
+}
+
+a_difference_names_a_bounded_number_of_paths() `test {
+  // A gate that rewrites the whole tree is the case that matters most and the
+  // one that would print the longest detail, so the summary is bounded where it
+  // is built rather than by whatever records it. The count is what keeps the
+  // bound from hiding the scale: eight paths and no number reads as a small
+  // accident.
+  string dir = _a_worktree("many");
+  int total = _named_paths * 3;
+  int i = 0;
+  while i < total {
+    io.File.write_content(dir + "/file-" + i.to_string() + ".txt", "as found\n")?!;
+    i = i + 1;
+  }
+  _committed(dir, "the subject");
+
+  Subject before = Subject.recorded(dir)?!;
+  int j = 0;
+  while j < total {
+    io.File.write_content(dir + "/file-" + j.to_string() + ".txt", "repaired\n")?!;
+    j = j + 1;
+  }
+  Subject after = Subject.recorded(dir)?!;
+
+  string? difference = after.changed_from(before);
+  assert(difference is present, msg: "a tree rewritten wholesale is a difference");
+  if difference is present {
+    assert(difference.contains("(+" + (total - _named_paths).to_string() + " more)"),
+           msg: "the summary says how many it did not name: " + difference);
+    // The bound is on the whole summary rather than on each half of it, and a
+    // length assertion is the only thing that catches a cap applied per half.
+    assert(difference.len < 400, msg: "and stays a detail rather than becoming a transcript: "
+                                      + difference.len.to_string() + " bytes");
+  }
+}
+
+a_directory_that_is_not_a_worktree_cannot_be_observed() `test {
+  // There is no sixth outcome for this and there should not be: the five are
+  // what a run amounted to, and a runner that cannot see the subject has not
+  // watched a run. So it raises, and the message names the directory — the one
+  // thing a person diagnosing this has to know and the one thing the type
+  // carries nowhere else.
+  string dir = os.temp_dir + "/gate-subject-" + os.process_id.to_string() + "-not-a-worktree";
+  io.Dir.make_all(dir)?!;
+
+  bool right_reason = false;
+  Subject s = Subject.recorded(dir) ? e {
+    right_reason = e.message.contains("could not be observed") && e.message.contains(dir);
+    Subject(_status: "", _tree: "");
+  };
+  assert(right_reason, msg: "a directory git will not answer about is refused, and named");
+}

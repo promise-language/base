@@ -69,7 +69,7 @@ type GateRun `public `doc("What one execution of one gate produced, as the runne
 
   get exit_code int? `public `doc("The gate process's exit code as the kernel reported it, kept for diagnosis, and absent where there was never one to keep — a gate that never started, one stopped at its deadline, or one stopped for printing more than the runner holds. Neither an outcome nor a verdict, and not what a caller reads to learn either: a gate killed mid-run never chose a code, and one that exits 0 having printed nothing has stated something false. What the run amounted to is the runner's account of it, and what the numbers amounted to is verify's.") => this._exit_code;
 
-  detail(this) string? `public `doc("What explained a bad outcome — the host the gate declared no command for, the deadline it overran, what was wrong with what it printed — absent when there was nothing to explain. Prose for a human diagnosing the gate, and never something to match on: the outcome beside it is what a caller dispatches on. Allocates.") {
+  detail(this) string? `public `doc("What explained a bad outcome — the host the gate declared no command for, the deadline it overran, what was wrong with what it printed, the tracked files it left changed — absent when there was nothing to explain. Prose for a human diagnosing the gate, and never something to match on: the outcome beside it is what a caller dispatches on. Allocates.") {
     if this._detail is present {
       return this._detail!.clone();
     }
@@ -84,7 +84,7 @@ type GateRun `public `doc("What one execution of one gate produced, as the runne
   }
 }
 
-run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What is read is bounded as well as how long it is read for: a gate that prints past what the runner will hold is stopped where the read stops, and what that amounts to is the contract's to say. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job.") {
+run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What is read is bounded as well as how long it is read for: a gate that prints past what the runner will hold is stopped where the read stops, and what that amounts to is the contract's to say. The tracked state of the subject is recorded before the spawn and compared after, and a gate that left it changed is reported as having broken the contract with no measurements at all, whatever it printed and whatever else became of it — a repairing gate prints good numbers, and `measured` is the outcome a baseline ratchets on. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job, which includes a subject it cannot see.") {
   OsCommand command = spec.command();
   string line = command.for_os(host);
   if line.is_empty {
@@ -108,12 +108,48 @@ run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `p
     i = i + 1;
   }
 
+  // Both returns above are settled before a process exists, so they are above
+  // the recording too: there is nothing to compare a tree against when nothing
+  // ran, and nothing to be gained from reading it twice.
+  //
+  // The directory is resolved once, here, and handed on rather than left
+  // absent. The subject is the tree the gate runs in, so the directory that is
+  // recorded and the directory the gate is spawned in have to be one value
+  // rather than two that agree by accident — and an absent working directory
+  // means the runner's own, which is a thing with a name.
+  string directory = "";
+  if given := working_directory {
+    directory = given;
+  } else {
+    directory = os.working_dir?^;
+  }
+
+  Subject before = Subject.recorded(directory)?^;
+  GateRun ran = _watch(spec, program, move args, directory)?^;
+  Subject after = Subject.recorded(directory)?^;
+  if difference := after.changed_from(before) {
+    // Over every other outcome, not only over `measured`. A gate that rewrote
+    // its subject is a defect in the gate's own code and recurs on every retry,
+    // which is what separates `broke the contract` from the `maybe` of a
+    // timeout and the `yes` of a death — and it is the one outcome that tells a
+    // caller holding the rest of a transition's gates that this worktree is
+    // spent (docs/gate-contract.md, "When a gate breaks the contract"). What it
+    // costs is the detail the run would otherwise have carried; the
+    // modification is the defect to fix first.
+    string modified = spec.name;
+    string why_modified = _modified(spec.name, difference);
+    return GateRun.of(move modified, RunOutcome.BrokeContract, ran.exit_code, move why_modified, none);
+  }
+  return ran;
+}
+
+_watch!(GateSpec spec, string program, string[] move args, string directory) GateRun `doc("Spawns one gate, watches it, and reports what it did — everything a run amounts to except whether it left its subject alone, which is the caller's because the caller is what holds the reading taken before the spawn. Split out for that one reason: the outcomes below leave by eight different returns, and a comparison written at each of them would be eight copies of one rule with eight chances to be missed.") {
   // new_process_group is true: the deadline below has to reach the gate's work,
   // and a gate's work is its process tree. Killing the leader alone leaves its
   // children running and holding the stdout pipe this runner is reading, which
   // is the wait the deadline exists to end. A process group exists to be
   // signalled as a unit — signal_group requires one — and _stop signals one.
-  os.Process child = os.Process.spawn(program, args, none, move working_directory, new_process_group: true) ? e {
+  os.Process child = os.Process.spawn(program, args, none, directory.clone(), new_process_group: true) ? e {
     // The one outcome settled before a process exists: exec refuses a program
     // that is absent or not executable, so there is no output to read and no
     // exit code to have. Not `died` — a retry reproduces a missing program
@@ -285,6 +321,10 @@ get _kept_prefix int `doc("How much of an over-talkative gate's stdout survives 
 
 _overran(string gate, Duration timeout) string `doc("What the runner says about a gate it stopped for running too long. One spelling, because the read and the wait are two places a deadline can land and one fact about the gate: it overran, and it was stopped. What it does not say is how, because that is the runner's business rather than the reader's — a reader acts on the deadline, not on the signal that enforced it.") {
   return "gate '" + gate + "' exceeded its declared timeout of " + timeout.to_string();
+}
+
+_modified(string gate, string difference) string `doc("What the runner says about a gate that did not give its subject back as it found it. The difference is subject.pr's — which paths moved, and whether anything was committed — and this is the runner's sentence around it, so the phrasing a reader meets has one spelling however the tree came to differ.") {
+  return "gate '" + gate + "' modified the tracked tree it measured: " + difference;
 }
 
 _read_all!(os.ProcessOutput ~pipe, int cap)(string, bool) `doc("Drains a pipe to a string, stopping once the gate has printed more than the cap allows the runner to hold. Reports what it read and whether the cap is what stopped it, rather than EOF. A gate's envelope is one JSON object and is read whole rather than streamed, so the cap is on the whole of it. One byte past the cap is read deliberately: a gate that printed exactly the cap printed something that can still be an envelope, and the byte after it is the only thing that tells the two apart. The cap arrives as a parameter rather than being read here, so that the one boundary it is declared at stays the one place it is decided — and so a test can reach this bound at a size a test can print.") {

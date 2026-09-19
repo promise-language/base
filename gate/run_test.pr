@@ -42,7 +42,7 @@ _a_gate_that_measures_and_fails() string {
   // names, which is the contract's own answer for a gate needing shell features
   // (docs/gate-contract.md, "The exec line"). Single quotes because the envelope
   // carries none of its own.
-  string dir = os.temp_dir;
+  string dir = _a_worktree("measures-and-fails");
   io.File.write_content(dir + "/" + _prints_and_fails, "echo '" + _an_envelope() + "'\nexit 1\n")?!;
   return dir;
 }
@@ -54,7 +54,7 @@ _a_gate_that_measures_and_then_overruns() string {
   // satisfied by it, and then keeps running until it is stopped. The one shape
   // that reaches the deadline with a readable envelope already in the runner's
   // hand, which is what makes discarding it a decision rather than an absence.
-  string dir = os.temp_dir;
+  string dir = _a_worktree("measures-then-overruns");
   io.File.write_content(dir + "/" + _measures_then_overruns,
                         "echo '" + _an_envelope() + "'\nexec 1>&-\nsleep 30\n")?!;
   return dir;
@@ -73,7 +73,7 @@ _a_gate_that_closes_its_stdout() string {
   // The directory is returned rather than the path because it is what run_gate
   // is handed: a working directory reaches the child whole, while a temp path
   // written into an exec line would be split on any space it happened to carry.
-  string dir = os.temp_dir;
+  string dir = _a_worktree("closes-stdout");
   io.File.write_content(dir + "/" + _closes_stdout, "echo ready\nexec 1>&-\nsleep 30\n")?!;
   return dir;
 }
@@ -192,6 +192,145 @@ an_envelope_that_fails_validation_breaks_the_contract() `test {
     assert(why.contains("must say why it measured less than usual"),
            msg: "carrying what validate refused it for, rather than a decode's complaint: " + why);
   }
+}
+
+get _repairs string => "gate-repairs.sh";
+
+_a_gate_that_repairs_and_then_measures() string {
+  // The shape the whole check exists for. Nothing about what this gate prints is
+  // wrong — it is a valid envelope with good numbers — and the numbers are good
+  // *because* it rewrote its subject first. A runner reading only stdout calls
+  // this `measured`, which is the one outcome a baseline ratchets on, and the
+  // ratchet never moves back.
+  string dir = _a_worktree("repairs");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+  io.File.write_content(dir + "/" + _repairs,
+                        "echo repaired > subject.txt\n"
+                        + "echo '" + _an_envelope() + "'\n")?!;
+  return dir;
+}
+
+a_gate_that_modifies_a_tracked_file_breaks_the_contract() `test {
+  string dir = _a_gate_that_repairs_and_then_measures();
+  GateSpec g = _spec("/bin/sh " + _repairs);
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "broke the contract",
+         msg: "a gate that did not give its subject back as it found it has not measured it");
+  // The half a correct outcome alone would not give: the envelope it printed
+  // must not travel out beside the breach. It is a perfectly good envelope, and
+  // that is exactly the problem — a violation that fed a ratchet would move a
+  // floor for a reason that is not about the code.
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "and a violation yields no measurements, however good the ones it printed were");
+  int? code = r.exit_code;
+  assert(code is present, msg: "the process ran to the end, so the kernel's number is kept for diagnosis");
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what the gate did");
+  if why is present {
+    assert(why.contains("probe"), msg: "naming the gate: " + why);
+    assert(why.contains("modified the tracked tree"), msg: "and what it did: " + why);
+    // Which path moved is carried nowhere else. Without it a reader has a
+    // worktree to diff by hand, which is the glance this detail exists to save.
+    assert(why.contains("subject.txt"), msg: "and which path it left changed: " + why);
+  }
+}
+
+get _writes_a_report string => "gate-writes-a-report.sh";
+
+_a_gate_that_writes_only_where_the_project_ignores() string {
+  // The benign direction, which the rule has to leave alone: a gate may write
+  // elsewhere — a build cache, a report — and where "elsewhere" is, is the
+  // project's to declare. Its own script is ignored along with the report so the
+  // worktree this measures is one the project called clean.
+  string dir = _a_worktree("ignoring");
+  io.File.write_content(dir + "/.gitignore", "out/\n" + _writes_a_report + "\n")?!;
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject and what it ignores");
+  io.File.write_content(dir + "/" + _writes_a_report,
+                        "mkdir -p out\n"
+                        + "echo measured > out/report.json\n"
+                        + "echo '" + _an_envelope() + "'\n")?!;
+  return dir;
+}
+
+a_gate_that_writes_only_where_the_project_ignores_still_measures() `test {
+  string dir = _a_gate_that_writes_only_where_the_project_ignores();
+  GateSpec g = _spec("/bin/sh " + _writes_a_report);
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "measured",
+         msg: "a gate that wrote only where the project said it may has measured its subject");
+  GateOutput? printed = r.output();
+  assert(printed is present, msg: "and its envelope comes back rather than being withheld");
+  string? why = r.detail();
+  assert(!(why is present), msg: "and there is nothing to explain");
+}
+
+get _repairs_then_overruns string => "gate-repairs-then-overruns.sh";
+
+_a_gate_that_repairs_and_then_overruns() string {
+  // A gate that rewrites its subject and is then stopped at its deadline. It
+  // closes its stdout first so the drain is satisfied and the deadline lands on
+  // the wait, which is the same shape _a_gate_that_closes_its_stdout has — the
+  // difference is the line above it, and the outcome that line is worth.
+  string dir = _a_worktree("repairs-then-overruns");
+  io.File.write_content(dir + "/subject.txt", "as found\n")?!;
+  _committed(dir, "the subject");
+  io.File.write_content(dir + "/" + _repairs_then_overruns,
+                        "echo repaired > subject.txt\n"
+                        + "exec 1>&-\n"
+                        + "sleep 30\n")?!;
+  return dir;
+}
+
+a_gate_that_modified_the_tree_and_then_overran_broke_the_contract() `test {
+  // The comparison sits over every outcome and not only over `measured`. A
+  // modification is a defect in the gate's own code and recurs on every retry,
+  // so reporting it as `timed out` — whose advice is "maybe retry" — points the
+  // next person at the clock and leaves a spent worktree looking reusable.
+  string dir = _a_gate_that_repairs_and_then_overruns();
+  GateSpec g = _spec_lasting("/bin/sh " + _repairs_then_overruns, Duration.from_millis(200));
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "broke the contract",
+         msg: "a gate that rewrote its subject broke the contract, whatever else became of it");
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what the gate did");
+  if why is present {
+    assert(why.contains("modified the tracked tree"),
+           msg: "and says the modification rather than the overrun, which is the defect to fix first: " + why);
+  }
+}
+
+a_gate_with_no_command_for_this_host_is_not_charged_with_a_modification() `test {
+  // The ordering the two pre-spawn returns depend on. Nothing ran, so there is
+  // nothing a comparison could attribute to the gate — and the directory here is
+  // not a worktree at all, which is what makes the ordering observable: a runner
+  // that recorded before resolving the exec line would raise here instead of
+  // reporting the manifest defect it was asked about.
+  OsOverride[] only_windows = OsOverride[]();
+  only_windows.push(OsOverride.of(HostOs.Windows, "make.cmd"));
+  VcsTransition[] b = VcsTransition[]();
+  b.push(VcsTransition.Commit);
+  GateSpec g = GateSpec.of("winonly", OsCommand.dispatched("", move only_windows), none,
+                           HostOs[](), none, HostArch[](), Duration.from_secs(60), move b, none,
+                           Exclusion[](), string[](), MetricSpec[]());
+  GateRun r = run_gate(g, HostOs.Linux, os.temp_dir.clone())?!;
+  assert(r.outcome.to_string() == "could not start",
+         msg: "a manifest defect is settled before there is a subject to look at");
+}
+
+a_run_in_a_directory_that_is_not_a_worktree_raises() `test {
+  // There is no sixth outcome for a subject the runner cannot see, and inventing
+  // one would be wrong: the five are what a run amounted to, and this is the
+  // runner failing to do its own job. run_gate's own doc reserves a raise for
+  // exactly that.
+  GateSpec g = _printing_an_envelope(Duration.from_secs(60));
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, os.temp_dir.clone()) ? e {
+    right_reason = e.message.contains("could not be observed");
+    GateRun.of("probe".clone(), RunOutcome.Died, none, none, none);
+  };
+  assert(right_reason, msg: "a subject the runner cannot see stops the run rather than being reported as one of the five");
 }
 
 a_gate_that_never_ends_is_killed_at_its_timeout() `test {
@@ -464,7 +603,7 @@ _a_gate_that_over_talks_and_then_goes_quiet() string {
   // afterwards is what makes stopping the gate observable at all. A gate still
   // writing into a pipe whose read end has closed dies of that by itself, so it
   // cannot tell a runner that stopped it from one that walked away.
-  string dir = os.temp_dir;
+  string dir = _a_worktree("over-talks");
   io.File.write_content(dir + "/" + _over_talks,
                         "yes " + _endless_token + " | head -n 150000\n"
                         + "sleep 30\n")?!;
