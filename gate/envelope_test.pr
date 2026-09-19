@@ -33,6 +33,51 @@ float_metrics_stay_floats() `test {
   assert(s.contains("50.4"), msg: "and keeps its fraction");
 }
 
+bool_metrics_stay_bools() `test {
+  map[string, MetricValue] m = map[string, MetricValue]();
+  m["builds_for_target"] = MetricValue.Bool(true);
+  GateOutput out = GateOutput.of("wasm32", move m);
+  string s = json.encode_string(out)?!;
+  assert(s.contains("\"type\":\"Bool\""), msg: "a property says it is one: " + s);
+  assert(s.contains("\"value\":true"), msg: "and is written as the yes it is: " + s);
+  // The encoding this member exists to end: a 1 here is a count that happens to
+  // be small, and nothing downstream could tell the two apart.
+  assert(!s.contains("\"value\":1"), msg: "a yes is not a 1: " + s);
+
+  GateOutput back = json.decode_string[GateOutput](s.clone())?!;
+  map[string, MetricValue] read = back.metrics();
+  MetricValue? builds = read["builds_for_target"];
+  assert(builds is present, msg: "the property came back");
+  bool is_bool = match builds! { Int(_) => false, Float(_) => false, Bool(_) => true };
+  assert(is_bool, msg: "and came back a bool rather than a number: " + s);
+}
+
+a_bool_measurement_carrying_a_number_is_refused() `test {
+  // The encoding this member exists to end, printed by a gate that tagged it
+  // Bool anyway. Read permissively, a 1 arrives as a yes nobody measured — and
+  // the envelope is decoded before anything compares it to what the manifest
+  // declared, so this is the boundary where it is still a number.
+  string printed = "\{\"schema_version\":1,\"target\":\"wasm32\",\"metrics\":\{\"builds_for_target\":\{\"type\":\"Bool\",\"value\":1\}\},\"groups\":[],\"incomplete_reason\":null\}";
+  bool refused = false;
+  GateOutput back = json.decode_string[GateOutput](move printed) ? e {
+    refused = true;
+    GateOutput.of("wasm32", map[string, MetricValue]());
+  };
+  assert(refused, msg: "a measurement tagged Bool and written as a number is refused, not read as true");
+
+  // The same envelope with the yes written as one, so what the refusal above
+  // rests on is the 1 rather than anything else in the shape.
+  string honest = "\{\"schema_version\":1,\"target\":\"wasm32\",\"metrics\":\{\"builds_for_target\":\{\"type\":\"Bool\",\"value\":true\}\},\"groups\":[],\"incomplete_reason\":null\}";
+  GateOutput read = json.decode_string[GateOutput](move honest)?!;
+  assert(read.target == "wasm32", msg: "and the envelope it was refused from is one this reader otherwise accepts");
+}
+
+a_bool_measurement_renders_as_a_yes_or_a_no() `test {
+  MetricValue no = MetricValue.Bool(false);
+  string text = no.to_string();
+  assert(text == "false", msg: "a measurement renders in its own type, and a bool's is not 0");
+}
+
 a_measured_type_survives_the_wire() `test {
   map[string, MetricValue] m = map[string, MetricValue]();
   m["test_count"] = MetricValue.Int(5);
@@ -47,8 +92,8 @@ a_measured_type_survives_the_wire() `test {
   assert(load is present, msg: "the load average came back");
   // Both measure 5. Written bare they would be one number, and whichever the
   // reader guessed would be right half the time.
-  bool count_is_int = match count! { Int(_) => true, Float(_) => false };
-  bool load_is_float = match load! { Int(_) => false, Float(_) => true };
+  bool count_is_int = match count! { Int(_) => true, Float(_) => false, Bool(_) => false };
+  bool load_is_float = match load! { Int(_) => false, Float(_) => true, Bool(_) => false };
   assert(count_is_int, msg: "an exact count is still an int after the round trip");
   assert(load_is_float, msg: "a float that lands on a whole number is still a float: " + s);
 }

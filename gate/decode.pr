@@ -63,6 +63,14 @@ _json_int!(json.JsonValue value, string what) int {
   raise ManifestError(message: what + " must be a number");
 }
 
+_json_bool!(json.JsonValue value, string what) bool {
+  bool? flag = value.as_bool();
+  if flag is present {
+    return flag;
+  }
+  raise ManifestError(message: what + " must be a boolean");
+}
+
 _json_strings!(json.JsonValue value, string what) string[] {
   json.JsonValue[] items = _json_array(value, what)?^;
   string[] out = string[]();
@@ -167,8 +175,14 @@ _read_metric!(json.JsonValue value) MetricSpec {
   }
   json.JsonValue cap = fields["cap"]!;
   MetricValue bound = MetricValue.Int(0);
-  if kind.to_string() == "int" {
+  // Read as the manifest declared it, never as the JSON happens to look: a bool
+  // is the one type the wire is unambiguous about, and trusting the wire for it
+  // would make it the one measurement whose declaration nothing checks.
+  string spelling = kind.to_string();
+  if spelling == "int" {
     bound = MetricValue.Int(_json_int(cap, where + " cap")?^);
+  } else if spelling == "bool" {
+    bound = MetricValue.Bool(_json_bool(cap, where + " cap")?^);
   } else {
     f64? number = cap.as_number();
     if number is present {

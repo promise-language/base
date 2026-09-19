@@ -148,6 +148,64 @@ a_fractional_int_cap_is_refused() `test {
   assert(right_reason, msg: "a fractional cap on an int metric is refused rather than truncated");
 }
 
+a_bool_cap_reads_as_a_bool() `test {
+  // at_least on a property that should become true and stay true — the same
+  // direction an int floor uses, which is what the bool ordering buys.
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"metrics\":[\{\"name\":\"builds_for_target\",\"type\":\"bool\",\"direction\":\"at_least\",\"mode\":\"enforced\",\"cap\":true\}]\}]\}", _this_project())?!;
+  GateSpec[] gates = m.gates();
+  GateSpec g = gates[0];
+  MetricSpec[] measured = g.metrics();
+  MetricSpec property = measured[0];
+  assert(property.kind.to_string() == "bool", msg: "the declared type reads as the third one the contract names");
+  assert(property.has_cap, msg: "and its cap was declared");
+  MetricValue bound = property.cap;
+  bool fixed_true = match bound { Int(_) => false, Float(_) => false, Bool(v) => v };
+  assert(fixed_true, msg: "a bool cap is the yes it was written as, not a 1 to compare against");
+}
+
+a_bool_cap_of_false_is_a_bound_rather_than_an_absent_one() `test {
+  // at_most on a property that should become false and stay false — the other
+  // half of the ordering, and the half a reader gets wrong by taking presence
+  // for truth: `false` is a cap that was declared, not a cap nobody wrote.
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"metrics\":[\{\"name\":\"vendored_copy_drifted\",\"type\":\"bool\",\"direction\":\"at_most\",\"mode\":\"enforced\",\"cap\":false\}]\}]\}", _this_project())?!;
+  GateSpec[] gates = m.gates();
+  GateSpec g = gates[0];
+  MetricSpec[] measured = g.metrics();
+  MetricSpec property = measured[0];
+  assert(property.has_cap, msg: "a cap of false is a declared bound, not an omitted one");
+  MetricValue bound = property.cap;
+  bool fixed_false = match bound { Int(_) => false, Float(_) => false, Bool(v) => !v };
+  assert(fixed_false, msg: "and it is the no it was written as, rather than a 0 or a refusal");
+}
+
+a_bool_metric_needs_no_cap() `test {
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"metrics\":[\{\"name\":\"builds_for_target\",\"type\":\"bool\",\"direction\":\"at_least\",\"mode\":\"enforced\"\}]\}]\}", _this_project())?!;
+  GateSpec[] gates = m.gates();
+  GateSpec g = gates[0];
+  MetricSpec[] measured = g.metrics();
+  MetricSpec property = measured[0];
+  assert(property.kind.to_string() == "bool", msg: "a bool metric reads with no cap declared");
+  assert(!property.has_cap, msg: "an omitted cap is absent, not a value read from nothing");
+}
+
+a_numeric_cap_on_a_bool_metric_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"metrics\":[\{\"name\":\"builds_for_target\",\"type\":\"bool\",\"direction\":\"at_least\",\"mode\":\"enforced\",\"cap\":1\}]\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("must be a boolean");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "the 0-or-1 encoding is refused where a bool was declared, rather than read as a yes");
+}
+
+a_bool_cap_on_a_numeric_metric_is_refused() `test {
+  bool right_reason = false;
+  Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"n\",\"command\":\"c\",\"timeout\":\"1m\",\"blocks\":[\"commit\"],\"metrics\":[\{\"name\":\"test_failures\",\"type\":\"int\",\"direction\":\"at_most\",\"mode\":\"enforced\",\"cap\":true\}]\}]\}", _this_project()) ? e {
+    right_reason = e.message.contains("must be a number");
+    Manifest.of(_this_project(), Target[](), none, GateSpec[]())?!;
+  };
+  assert(right_reason, msg: "the cap is read as the type the manifest declared, so a bool does not reach a numeric metric");
+}
+
 an_inert_gate_survives_the_wire() `test {
   bool right_reason = false;
   Manifest m = decode_manifest("\{\"schema_version\":1,\"gates\":[\{\"name\":\"g\",\"command\":\"c\",\"timeout\":\"1m\"\}]\}", _this_project()) ? e {

@@ -60,12 +60,14 @@ type OsCommand `public `clone `doc("An exec line, optionally dispatched per host
 enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` on the wire; `kind` here, because `type` is a keyword. Declared rather than inferred, and declared even though an envelope states the type of every measurement it carries: the two are a claim and its check, so a run reporting a float where this says int is a mismatch to name rather than a widening to absorb.") {
   Int,
   Float,
+  Bool,
 
   parse!(Reader ~r) MetricType `factory `public `doc("Reads the wire spelling.") {
     string name = _drain(r)?^;
     if name == "int" { return MetricType.Int; }
     if name == "float" { return MetricType.Float; }
-    raise VocabularyError(message: "unknown metric type '" + name + "': expected int or float");
+    if name == "bool" { return MetricType.Bool; }
+    raise VocabularyError(message: "unknown metric type '" + name + "': expected int, float, or bool");
   }
 
   format!(Writer ~w) `public `doc("Writes the wire spelling — the half of serialization that parse reads back.") {
@@ -75,6 +77,7 @@ enum MetricType `public `clone `doc("What a metric measures in. Spelled `type` o
   to_string(this) string `public `doc("The wire spelling.") => match this {
     Int => "int",
     Float => "float",
+    Bool => "bool",
   };
 }
 
