@@ -13,11 +13,52 @@ _spec_lasting(string move command, Duration timeout) GateSpec {
                      timeout, move b, none, Exclusion[](), string[](), MetricSpec[]());
 }
 
+// One copy of the envelope these fixtures print. The body is shared because the
+// two envelopes below differ in one key and nothing else: a second copy would be
+// two things to edit when the wire changes, and the difference is the point.
+get _envelope_body string => "\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\"test_count\":\{\"type\":\"Int\",\"value\":17703\}\},\"groups\":[]";
+
+_an_envelope() string {
+  return "\{" + _envelope_body + "\}";
+}
+
+_an_envelope_incomplete_with_no_reason() string {
+  // Well-formed JSON that decodes and then fails validate: an incomplete run
+  // with nothing to say is the one state an envelope cannot mean.
+  return "\{" + _envelope_body + ",\"incomplete_reason\":\"\"\}";
+}
+
 _printing_an_envelope(Duration timeout) GateSpec {
-  return _spec_lasting("/bin/echo " + "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\"test_count\":\{\"type\":\"Int\",\"value\":17703\}\},\"groups\":[]\}", timeout);
+  return _spec_lasting("/bin/echo " + _an_envelope(), timeout);
 }
 
 get _closes_stdout string => "gate-closes-stdout.sh";
+
+get _prints_and_fails string => "gate-prints-and-fails.sh";
+
+_a_gate_that_measures_and_fails() string {
+  // A gate that prints its envelope and then exits non-zero. No stock program
+  // does both — /bin/echo always succeeds — so this is a script the exec line
+  // names, which is the contract's own answer for a gate needing shell features
+  // (docs/gate-contract.md, "The exec line"). Single quotes because the envelope
+  // carries none of its own.
+  string dir = os.temp_dir;
+  io.File.write_content(dir + "/" + _prints_and_fails, "echo '" + _an_envelope() + "'\nexit 1\n")?!;
+  return dir;
+}
+
+get _measures_then_overruns string => "gate-measures-then-overruns.sh";
+
+_a_gate_that_measures_and_then_overruns() string {
+  // A gate that prints a whole envelope, closes its stdout so the drain is
+  // satisfied by it, and then keeps running until it is stopped. The one shape
+  // that reaches the deadline with a readable envelope already in the runner's
+  // hand, which is what makes discarding it a decision rather than an absence.
+  string dir = os.temp_dir;
+  io.File.write_content(dir + "/" + _measures_then_overruns,
+                        "echo '" + _an_envelope() + "'\nexec 1>&-\nsleep 30\n")?!;
+  return dir;
+}
 
 _a_gate_that_closes_its_stdout() string {
   // A gate that stops talking and keeps running is not a stock program, and the
@@ -51,45 +92,106 @@ a_run_reports_which_gate_it_was() `test {
   GateSpec g = _spec("/usr/bin/true ignored args");
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
   assert(r.gate == "probe", msg: "the run names its gate");
-  assert(r.exit_code == 0, msg: "and arguments reached exec without a shell in between");
+  int? code = r.exit_code;
+  assert(code is present, msg: "a gate that ran has the code the kernel gave it");
+  assert(code! == 0, msg: "and arguments reached exec without a shell in between");
 }
 
 a_gate_that_prints_an_envelope_is_read() `test {
   GateSpec g = _printing_an_envelope(Duration.from_secs(60));
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.outcome.to_string() == "measured", msg: "a gate that completed and printed a valid envelope measured");
   GateOutput? printed = r.output();
   assert(printed is present, msg: "the envelope came back");
   if printed is present {
     assert(printed.target == "linux/amd64", msg: "with the target it spoke for");
     assert(printed.complete, msg: "and its completeness derived from the absent reason");
   }
+  string? why = r.detail();
+  assert(!(why is present), msg: "and a run with nothing wrong with it explains nothing");
 }
 
-a_gate_that_prints_nothing_is_not_an_error() `test {
+a_gate_that_exits_clean_having_printed_nothing_died() `test {
   // A gate may die before it can measure. A missing envelope is absence rather
-  // than a malformed one, and what killed it is the runner's to report.
+  // than a malformed one, and what killed it is the runner's to report — so the
+  // run is `died` and a retry is the correct response. The exit code sitting
+  // beside that silence is the reason the outcome cannot be the code: zero here
+  // is a gate stating something false, and a caller reading it believes it.
   GateSpec g = _spec("/usr/bin/true");
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
   GateOutput? printed = r.output();
   assert(!(printed is present), msg: "silence is absent rather than unreadable");
-  assert(r.exit_code == 0, msg: "and the process's own code is recorded as the kernel gave it");
+  assert(r.outcome.to_string() == "died", msg: "and a gate that printed no envelope measured nothing");
+  int? code = r.exit_code;
+  assert(code is present, msg: "the process's own code is recorded as the kernel gave it");
+  assert(code! == 0, msg: "and it is the zero that must not be read as a result");
+  string? why = r.detail();
+  assert(why is present, msg: "and the run says why it amounted to nothing");
+  if why is present {
+    // The pairing this outcome exists for: an exit code of zero and a run that
+    // measured nothing. The detail is the only thing standing between a reader
+    // and that zero, so a `died` that explained nothing here would be read back
+    // as the success the gate falsely claimed.
+    assert(why.contains("without printing an envelope"), msg: "and what the silence amounted to: " + why);
+  }
 }
 
 a_failing_gate_is_a_successful_run() `test {
-  // Running a gate that reports failure is not a failure to run it.
-  GateSpec g = _spec("/usr/bin/false");
-  GateRun r = run_gate(g, HostOs.Linux, none)?!;
-  assert(r.exit_code != 0, msg: "the process's own code is recorded, and is not what the run amounted to");
+  // Running a gate that reports failure is not a failure to run it: the gate
+  // printed a valid envelope, so the run measured, and whether 17703 is
+  // acceptable is verify's question rather than this one's. The exit code is
+  // 1 and does not change that, which is the contract's "the gate's own exit
+  // code is not consulted" with something to consult.
+  string dir = _a_gate_that_measures_and_fails();
+  GateSpec g = _spec("/bin/sh " + _prints_and_fails);
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "measured", msg: "a gate that printed a valid envelope measured");
+  int? code = r.exit_code;
+  assert(code is present, msg: "the process's own code is recorded");
+  assert(code! == 1, msg: "and it is not zero, and is not what the run amounted to");
+  GateOutput? printed = r.output();
+  assert(printed is present, msg: "the measurements a failing gate made are still measurements");
 }
 
-output_that_is_not_an_envelope_is_refused() `test {
+output_that_is_not_an_envelope_breaks_the_contract() `test {
   GateSpec g = _spec("/bin/echo not-json-at-all");
-  bool right_reason = false;
-  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
-    right_reason = e.message.contains("not an envelope");
-    GateRun.of("probe", 0, none);
-  };
-  assert(right_reason, msg: "a gate printing something else is a contract breach, not a verdict");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.outcome.to_string() == "broke the contract",
+         msg: "a gate printing something else is a contract breach, not a verdict");
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "and a violation yields no measurements at all");
+  int? code = r.exit_code;
+  assert(code is present, msg: "the process ran, so the kernel's number is kept for diagnosis");
+  string? why = r.detail();
+  assert(why is present, msg: "and what was wrong with what it printed is said, once, for a human");
+  if why is present {
+    assert(why.contains("not an envelope"),
+           msg: "naming the half of the breach this was, which the outcome does not: " + why);
+  }
+}
+
+an_envelope_that_fails_validation_breaks_the_contract() `test {
+  // The other half of the breach. The gate printed JSON that decodes as an
+  // envelope and is then refused by validate, which arrives as a GateError
+  // rather than the RunError a failed decode raises — two error types, one
+  // fact about the gate, and a caller that had to tell them apart would be
+  // matching on text again.
+  GateSpec g = _spec("/bin/echo " + _an_envelope_incomplete_with_no_reason());
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.outcome.to_string() == "broke the contract",
+         msg: "an envelope that cannot mean what it says is a breach, not a measurement");
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "and nothing it carried is reported");
+  // Which of the two breaches it was is the detail's whole job here, since the
+  // outcome deliberately does not distinguish them. A detail that said only
+  // "broke the contract" would satisfy every other assertion in both tests and
+  // leave a human with a gate to diagnose and nothing to diagnose it from.
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what was wrong with what the gate printed");
+  if why is present {
+    assert(why.contains("must say why it measured less than usual"),
+           msg: "carrying what validate refused it for, rather than a decode's complaint: " + why);
+  }
 }
 
 a_gate_that_never_ends_is_killed_at_its_timeout() `test {
@@ -98,12 +200,19 @@ a_gate_that_never_ends_is_killed_at_its_timeout() `test {
   // only the deadline ends either. A runner that did not enforce the timeout
   // would hang here rather than fail here.
   GateSpec g = _spec_lasting("/bin/cat", Duration.from_millis(200));
-  bool right_reason = false;
-  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
-    right_reason = e.message.contains("probe") && e.message.contains("exceeded its declared timeout");
-    GateRun.of("probe", 0, none);
-  };
-  assert(right_reason, msg: "a gate that outlasts its timeout is stopped and named, not waited on");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.outcome.to_string() == "timed out", msg: "a gate that outlasts its timeout is stopped, not waited on");
+  int? code = r.exit_code;
+  assert(!(code is present), msg: "and a gate stopped at its deadline never chose an exit code to report");
+  // The one place _overran's text is read. It is a diagnostic for a human, not
+  // what a caller dispatches on — that is the outcome above — and this asserts
+  // it names the gate and what happened to it rather than the signal used.
+  string? why = r.detail();
+  assert(why is present, msg: "the run says why it ended");
+  if why is present {
+    assert(why.contains("probe"), msg: "naming the gate: " + why);
+    assert(why.contains("exceeded its declared timeout"), msg: "and that it overran: " + why);
+  }
 }
 
 a_gate_that_would_finish_late_is_stopped_when_its_time_runs_out() `test {
@@ -112,13 +221,9 @@ a_gate_that_would_finish_late_is_stopped_when_its_time_runs_out() `test {
   // the very same error three seconds later, which is the defect, not the fix.
   GateSpec g = _spec_lasting("/bin/sleep 3", Duration.from_millis(200));
   Instant started = Instant.now();
-  bool right_reason = false;
-  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
-    right_reason = e.message.contains("exceeded its declared timeout");
-    GateRun.of("probe", 0, none);
-  };
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
   Duration took = started.elapsed();
-  assert(right_reason, msg: "the gate was stopped for running too long");
+  assert(r.outcome.to_string() == "timed out", msg: "the gate was stopped for running too long");
   assert(took < Duration.from_secs(2), msg: "and stopped near its deadline rather than running to completion");
 }
 
@@ -151,14 +256,30 @@ a_gate_that_closes_its_stdout_and_keeps_running_is_stopped_at_its_timeout() `tes
   string dir = _a_gate_that_closes_its_stdout();
   GateSpec g = _spec_lasting("/bin/sh " + _closes_stdout, Duration.from_millis(200));
   Instant started = Instant.now();
-  bool right_reason = false;
-  GateRun r = run_gate(g, HostOs.Linux, move dir) ? e {
-    right_reason = e.message.contains("probe") && e.message.contains("exceeded its declared timeout");
-    GateRun.of("probe", 0, none);
-  };
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
   Duration took = started.elapsed();
-  assert(right_reason, msg: "a gate that stops talking and keeps running still overruns its budget");
+  assert(r.outcome.to_string() == "timed out", msg: "a gate that stops talking and keeps running still overruns its budget");
+  int? code = r.exit_code;
+  assert(!(code is present), msg: "and having been stopped, it reports no exit code either");
   assert(took < Duration.from_secs(2), msg: "and is stopped at the deadline rather than waited out");
+}
+
+a_gate_that_printed_an_envelope_and_then_overran_measured_nothing() `test {
+  // A run cut short measured nothing, whatever it printed before the clock ran
+  // out — so the outcome is `timed out` and the envelope in hand is dropped.
+  // Every other timeout test uses a gate that printed nothing an envelope could
+  // be made of, so a runner that reported `measured` off the text it happened to
+  // have drained, or carried that envelope out beside a `timed out`, would pass
+  // all of them. The distinction is the contract's: whether the gate spoke is a
+  // different question from whether the run finished, and only one of them is
+  // what a caller is told here.
+  string dir = _a_gate_that_measures_and_then_overruns();
+  GateSpec g = _spec_lasting("/bin/sh " + _measures_then_overruns, Duration.from_millis(200));
+  GateRun r = run_gate(g, HostOs.Linux, move dir)?!;
+  assert(r.outcome.to_string() == "timed out",
+         msg: "a gate stopped at its deadline timed out, whatever it had printed first");
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "and reports no measurements, because a run that was cut short measured nothing");
 }
 
 a_drain_ends_at_eof_rather_than_at_the_gate_s_exit() `test {
@@ -249,10 +370,16 @@ a_gate_that_finishes_inside_its_timeout_is_left_alone() `test {
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
   GateOutput? printed = r.output();
   assert(printed is present, msg: "a gate inside its budget is read rather than stopped");
-  assert(r.exit_code == 0, msg: "and the exit code is the one the kernel gave it");
+  assert(r.outcome.to_string() == "measured", msg: "and a short budget it comfortably meets is not a reason to stop it");
+  int? code = r.exit_code;
+  assert(code is present, msg: "a gate that ended reports a code");
+  assert(code! == 0, msg: "and the exit code is the one the kernel gave it");
 }
 
-a_gate_with_no_command_for_this_host_is_refused() `test {
+a_gate_with_no_command_for_this_host_could_not_start() `test {
+  // A manifest defect, and the outcome says whose it is: nothing ran, and a
+  // retry reproduces it forever. Telling this from a gate that printed rubbish
+  // used to mean matching on the message text of one shared error type.
   OsOverride[] only_windows = OsOverride[]();
   only_windows.push(OsOverride.of(HostOs.Windows, "make.cmd"));
   VcsTransition[] b = VcsTransition[]();
@@ -260,10 +387,132 @@ a_gate_with_no_command_for_this_host_is_refused() `test {
   GateSpec g = GateSpec.of("winonly", OsCommand.dispatched("", move only_windows), none,
                            HostOs[](), none, HostArch[](), Duration.from_secs(60), move b, none,
                            Exclusion[](), string[](), MetricSpec[]());
-  bool right_reason = false;
-  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
-    right_reason = e.message.contains("declares no command");
-    GateRun.of("winonly", 0, none);
-  };
-  assert(right_reason, msg: "no line for this OS is refused rather than run as empty");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.gate == "winonly", msg: "a run that never started still names its gate");
+  assert(r.outcome.to_string() == "could not start",
+         msg: "no line for this OS is refused rather than run as empty");
+  int? code = r.exit_code;
+  assert(!(code is present), msg: "and with no process there was never an exit code to have");
+  GateOutput? printed = r.output();
+  assert(!(printed is present), msg: "nor an envelope");
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what was wrong with the manifest");
+  if why is present {
+    // Which host had no line is carried nowhere else: the run names its gate and
+    // nothing else, so a detail that omitted it would leave a reader holding a
+    // manifest that declares a command, and no way to tell which one was asked for.
+    assert(why.contains("linux"), msg: "naming the host it declared no command for: " + why);
+  }
+}
+
+an_empty_command_line_could_not_start() `test {
+  // A line that is not empty and splits to nothing. The same manifest defect
+  // as declaring no line at all, and it reaches the same outcome rather than a
+  // second error a caller would have to know about separately.
+  GateSpec g = _spec("   ");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.outcome.to_string() == "could not start", msg: "a line with no tokens in it names no program");
+  int? code = r.exit_code;
+  assert(!(code is present), msg: "and nothing ran");
+  string? why = r.detail();
+  assert(why is present, msg: "the run says what was wrong with the manifest");
+}
+
+a_gate_whose_program_is_absent_is_not_yet_could_not_start() `test {
+  // The contract's `could not start` is "what the spawn itself reports — the
+  // exec syscall refuses a program that is absent or not executable". This
+  // runner cannot see that on POSIX: os.Process.spawn succeeds for a missing
+  // program and the child exits 127 (os_test.pr, test_execute_nonexistent_
+  // program: "the execvp-failure convention"). So the runner observes a process
+  // that ran and printed nothing, which is `died` — and the contract forbids
+  // reading 127 as the missing program, because 127 is a shell reporting it and
+  // the exec line forbids a shell. See promise-language/base#43.
+  //
+  // This asserts what the runner can actually observe today, so that the day
+  // spawn reports the failure this test fails and says so. The spawn handler in
+  // run.pr is the correct mapping and does fire where the platform reports it —
+  // CreateProcessA does fail for a missing program on Windows.
+  GateSpec g = _spec("/nonexistent-directory/no-such-gate");
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  assert(r.outcome.to_string() == "died", msg: "which is the wrong outcome, and not one this runner can improve on alone");
+  int? code = r.exit_code;
+  assert(code is present, msg: "because a process did exist");
+  assert(code! == 127, msg: "and 127 is the number the contract says a runner must not read as a missing program");
+}
+
+a_run_carries_every_field() `test {
+  // The tripwire a_clone_carries_every_field is named for, one type over. The
+  // factory is positional, so a field added to GateRun changes `of` and this
+  // test stops compiling until someone says what the new field reads back as.
+  map[string, MetricValue] no_metrics = map[string, MetricValue]();
+  GateOutput env = GateOutput.of("linux/amd64", move no_metrics);
+  GateRun full = GateRun.of("full", RunOutcome.BrokeContract, 3, "printed a sonnet", move env);
+
+  assert(full.gate == "full", msg: "gate");
+  assert(full.outcome.to_string() == "broke the contract", msg: "outcome");
+  int? code = full.exit_code;
+  assert(code is present, msg: "exit_code survives as present");
+  assert(code! == 3, msg: "exit_code");
+  string? why = full.detail();
+  assert(why is present, msg: "detail survives as present");
+  assert(why! == "printed a sonnet", msg: "detail");
+  GateOutput? printed = full.output();
+  assert(printed is present, msg: "output survives as present");
+  if printed is present {
+    assert(printed.target == "linux/amd64", msg: "output");
+  }
+
+  // And the absences, because they are what the outcome rests on: a run that
+  // never started has no code to report and nothing to show, and a sentinel
+  // standing in for either is the false reading the outcome exists to replace.
+  GateRun bare = GateRun.of("bare", RunOutcome.CouldNotStart, none, none, none);
+  int? no_code = bare.exit_code;
+  assert(!(no_code is present), msg: "an absent exit_code is absent, not zero");
+  string? no_why = bare.detail();
+  assert(!(no_why is present), msg: "an absent detail is absent, not empty");
+  GateOutput? no_output = bare.output();
+  assert(!(no_output is present), msg: "an absent envelope is absent");
+}
+
+_every_run_outcome() RunOutcome[] {
+  RunOutcome[] all = RunOutcome[]();
+  all.push(RunOutcome.Measured);
+  all.push(RunOutcome.TimedOut);
+  all.push(RunOutcome.CouldNotStart);
+  all.push(RunOutcome.Died);
+  all.push(RunOutcome.BrokeContract);
+  return all;
+}
+
+_every_run_spelling() string[] {
+  string[] all = string[]();
+  all.push("measured");
+  all.push("timed out");
+  all.push("could not start");
+  all.push("died");
+  all.push("broke the contract");
+  return all;
+}
+
+every_run_outcome_is_spelled_as_the_contract_spells_it() `test {
+  // Five, and they are the full set — docs/gate-contract.md, "What the gate
+  // runner reports". The rendering is what a reader sees and what two outcomes
+  // are compared by, an enum satisfying neither Hashable nor Equal, so a
+  // spelling that drifts from the document is a real divergence rather than a
+  // cosmetic one.
+  RunOutcome[] every = _every_run_outcome();
+  string[] spellings = _every_run_spelling();
+  assert(every.len == 5, msg: "the set is five");
+  assert(spellings.len == every.len, msg: "and one spelling per outcome");
+  bool every_one = true;
+  int i = 0;
+  while i < every.len {
+    RunOutcome one = every[i];
+    string want = spellings[i];
+    if one.to_string() != want {
+      every_one = false;
+    }
+    i = i + 1;
+  }
+  assert(every_one, msg: "each outcome renders as the word the contract uses for it");
 }
