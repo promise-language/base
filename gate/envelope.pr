@@ -11,9 +11,9 @@
 //
 // What is here and not there: this module's encoding is derived from the
 // declared shape rather than written, which is how the type comes to travel with
-// the value with no encoder for anyone to maintain. `Outcome.encode` is the one
-// departure, and it and each platform defect worked around here are argued at
-// the declaration they sit on.
+// the value with no encoder for anyone to maintain. `Outcome` is the one
+// departure — it writes and reads its wire spelling by hand — and it and each
+// platform defect worked around here are argued at the declaration they sit on.
 
 type GateError is error `public `doc("A gate envelope that cannot be accepted.") {
 }
