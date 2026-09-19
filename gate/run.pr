@@ -84,7 +84,7 @@ type GateRun `public `doc("What one execution of one gate produced, as the runne
   }
 }
 
-run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What is read is bounded as well as how long it is read for: a gate that prints past what the runner will hold is stopped there and reported as having broken the contract, because a stream nobody can keep whole is not the one JSON object a gate was asked for. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job.") {
+run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What is read is bounded as well as how long it is read for: a gate that prints past what the runner will hold is stopped where the read stops, and what that amounts to is the contract's to say. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job.") {
   OsCommand command = spec.command();
   string line = command.for_os(host);
   if line.is_empty {
@@ -136,11 +136,10 @@ run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `p
     return GateRun.of(move unread, RunOutcome.Died, none, move why_unread, none);
   }
   if began := too_much {
-    // The gate printed more than the runner will hold, so it printed no
-    // envelope: one JSON object does not arrive in a stream nobody can keep.
-    // Stopping it is part of having stopped reading rather than a tidy-up after
-    // it — a gate still writing into a pipe that is no longer drained blocks on
-    // a full buffer, which is a hang this bound would have caused.
+    // Stopping the gate belongs to having stopped reading rather than to a
+    // tidy-up after it (docs/gate-contract.md, "The envelope"). The read end is
+    // already closed — the drain's goroutine returned, and the pipe went with
+    // it — and this is the other half of that one act.
     _stop(child);
     string talkative = spec.name;
     string why_talkative = "gate '" + spec.name + "' printed more than " + _stdout_cap.to_string()
@@ -231,7 +230,7 @@ _drain_within(os.ProcessOutput move out, Instant deadline)(string?, string?, str
   return (text, failure, began);
 }
 
-_read_into(os.ProcessOutput move pipe, channel[string] read, channel[string] unreadable, channel[string] too_much) `doc("Drains one gate's stdout and reports it, reports why it could not be read, or reports that the gate printed more than the runner holds and what it began with. This is the body _drain_within abandons when the deadline lands first, which is why it owns the pipe rather than borrowing one that would outlive its owner — and why returning here is what closes the read end, since a gate left writing into a pipe nobody drains is a gate this bound has hung rather than stopped.") {
+_read_into(os.ProcessOutput move pipe, channel[string] read, channel[string] unreadable, channel[string] too_much) `doc("Drains one gate's stdout and reports it, reports why it could not be read, or reports that the gate printed more than the runner holds and what it began with. This is the body _drain_within abandons when the deadline lands first, which is why it owns the pipe rather than borrowing one that would outlive its owner — and why returning here is what closes the read end, which is half of stopping a gate that printed too much and the reason this reports the cap rather than reading on to EOF.") {
   (printed, capped) := _read_all(pipe, _stdout_cap) ? e {
     unreadable.send(e.message.clone());
     return;
@@ -246,7 +245,7 @@ _read_into(os.ProcessOutput move pipe, channel[string] read, channel[string] unr
   read.send(move printed);
 }
 
-_head(string text) string `doc("The most of what a gate printed that is kept to say what it was printing. Enough to recognise a build log, a test transcript or a stack trace where an envelope was meant, and never the stream itself — which is worth neither the runner's memory nor the space it would take in whatever stores what the runner reports. Shorter text is kept whole rather than padded: this is a bound, not a width.") {
+_head(string text) string `doc("The prefix of what a gate printed that the runner keeps to say what it was printing. The head and not the tail, which is the one thing about it this file decides: what a reader needs is where the condition started, and a cap that keeps the most recent bytes discards exactly that (docs/org/engineering-guide.md, \"Everything a program writes has a ceiling\"). Shorter text is kept whole rather than padded: this is a bound, not a width.") {
   if text.len <= _kept_prefix {
     return text.clone();
   }
@@ -276,11 +275,11 @@ get _poll_interval Duration `doc("How often the runner looks again at a gate it 
   return Duration.from_millis(5);
 }
 
-get _stdout_cap int `doc("The most of a gate's stdout the runner will hold, in bytes, and so the largest envelope a gate may print. The bound is the contract's (docs/gate-contract.md, \"The envelope\") and is named here once rather than written at the read, because it is one number answering two questions that cannot have different answers: how much memory one gate can cost its runner, and how large an envelope a gate may write. A megabyte is generous for what an envelope carries — measurements, per-part groups, and members whose detail the contract already bounds — and a gate that needs more than it is printing a transcript rather than measuring.") {
+get _stdout_cap int `doc("The bound the contract puts on a gate's stdout (docs/gate-contract.md, \"The envelope\"), in bytes: one MiB, and what it means and why it is that number are stated there. It is named at one boundary rather than written at the read that enforces it, the way a timeout is, so that the number the runner holds to can be found, cited and reached by a test without reading the loop.") {
   return 1048576;
 }
 
-get _kept_prefix int `doc("How much of an over-talkative gate's stdout survives into what the runner reports, in bytes. Enough for a human to see what the gate was actually emitting, which is what they need to fix it, and no more: the stream itself is worth neither the runner's memory nor the space it would take in whatever stores the report, and a log line is bounded at 64 KiB in any case (docs/org/logging.md, \"The line\").") {
+get _kept_prefix int `doc("How much of an over-talkative gate's stdout survives into what the runner reports, in bytes. That a bounded prefix survives at all is the contract's (docs/gate-contract.md, \"The envelope\"); the size is this runner's, and it is chosen to sit well inside the bound one log line is held to (docs/org/logging.md, \"The line\") — a diagnostic that has to be cut again by whatever records it was not a bound, only a smaller unbounded one.") {
   return 1024;
 }
 
