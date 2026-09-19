@@ -58,7 +58,7 @@ type GateRun `public `doc("What one execution of one gate produced, as the runne
   string? _detail `final;
   GateOutput? _output `final;
 
-  of(string move gate, RunOutcome move outcome, int? move exit_code, string? move detail, GateOutput? move output) Self `factory `public `doc("A finished run, as the runner watched it. The exit code is absent where the kernel never produced one — a gate that never started, and one stopped at its deadline — because a number standing in for an absence would be the same false reading the outcome exists to replace. The detail explains a bad outcome and is absent when there is nothing to explain.") {
+  of(string move gate, RunOutcome move outcome, int? move exit_code, string? move detail, GateOutput? move output) Self `factory `public `doc("A finished run, as the runner watched it. The exit code is absent where the kernel never produced one — a gate that never started, one stopped at its deadline, and one stopped for printing more than the runner holds — because a number standing in for an absence would be the same false reading the outcome exists to replace. The detail explains a bad outcome and is absent when there is nothing to explain.") {
     return GateRun(_gate: move gate, _outcome: move outcome, _exit_code: move exit_code,
                    _detail: move detail, _output: move output);
   }
@@ -67,7 +67,7 @@ type GateRun `public `doc("What one execution of one gate produced, as the runne
 
   get outcome RunOutcome `public `doc("What the run amounted to, as the runner determined it from what it watched. This is what a caller reads; the exit code beside it is a diagnostic, and whether the numbers are acceptable is verify's question rather than this one's.") => this._outcome;
 
-  get exit_code int? `public `doc("The gate process's exit code as the kernel reported it, kept for diagnosis, and absent where there was never one to keep — a gate that never started, or one stopped at its deadline. Neither an outcome nor a verdict, and not what a caller reads to learn either: a gate killed mid-run never chose a code, and one that exits 0 having printed nothing has stated something false. What the run amounted to is the runner's account of it, and what the numbers amounted to is verify's.") => this._exit_code;
+  get exit_code int? `public `doc("The gate process's exit code as the kernel reported it, kept for diagnosis, and absent where there was never one to keep — a gate that never started, one stopped at its deadline, or one stopped for printing more than the runner holds. Neither an outcome nor a verdict, and not what a caller reads to learn either: a gate killed mid-run never chose a code, and one that exits 0 having printed nothing has stated something false. What the run amounted to is the runner's account of it, and what the numbers amounted to is verify's.") => this._exit_code;
 
   detail(this) string? `public `doc("What explained a bad outcome — the host the gate declared no command for, the deadline it overran, what was wrong with what it printed — absent when there was nothing to explain. Prose for a human diagnosing the gate, and never something to match on: the outcome beside it is what a caller dispatches on. Allocates.") {
     if this._detail is present {
@@ -84,7 +84,7 @@ type GateRun `public `doc("What one execution of one gate produced, as the runne
   }
 }
 
-run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job.") {
+run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `public `doc("Runs one gate on this host and reports what became of it. Dispatches the command for the host OS, execs it without a shell, collects stdout, and decodes the envelope if there is one. Eligibility is the caller's to have checked; this runs what it is given. The gate's declared timeout is enforced from the spawn — it bounds the read and the wait alike, since either is where a hung gate leaves the runner — and a gate that reaches it is stopped and reports nothing, because a run that was cut short measured nothing. What is read is bounded as well as how long it is read for: a gate that prints past what the runner will hold is stopped where the read stops, and what that amounts to is the contract's to say. What the run amounted to comes back as the outcome on the GateRun rather than as a raised error: a gate that never started, one stopped for running too long, one that died without printing a readable envelope and one that printed something that is not an envelope are four facts with three different owners, and an error type carrying them in prose is a set nobody can dispatch on without matching text. A gate that ran and reported a failure is a successful run of a failing gate, which is a different thing again. Raises only where the runner itself could not do its job.") {
   OsCommand command = spec.command();
   string line = command.for_os(host);
   if line.is_empty {
@@ -128,12 +128,23 @@ run_gate!(GateSpec spec, HostOs host, string? move working_directory) GateRun `p
   Instant deadline = Instant.now() + spec.timeout;
   os.ProcessOutput out = child.take_stdout()?^;
 
-  (printed, unreadable) := _drain_within(move out, deadline);
+  (printed, unreadable, too_much) := _drain_within(move out, deadline);
   if reason := unreadable {
     _stop(child);
     string unread = spec.name;
     string why_unread = "gate '" + spec.name + "' printed output that could not be read: " + reason;
     return GateRun.of(move unread, RunOutcome.Died, none, move why_unread, none);
+  }
+  if began := too_much {
+    // Stopping the gate belongs to having stopped reading rather than to a
+    // tidy-up after it (docs/gate-contract.md, "The envelope"). The read end is
+    // already closed — the drain's goroutine returned, and the pipe went with
+    // it — and this is the other half of that one act.
+    _stop(child);
+    string talkative = spec.name;
+    string why_talkative = "gate '" + spec.name + "' printed more than " + _stdout_cap.to_string()
+                           + " bytes on stdout, which is not an envelope; it began: " + began;
+    return GateRun.of(move talkative, RunOutcome.BrokeContract, none, move why_talkative, none);
   }
   string text = "";
   if drained := printed {
@@ -189,38 +200,56 @@ _envelope!(string gate, string move printed) GateOutput? `doc("Reads what the ga
   return read;
 }
 
-_drain_within(os.ProcessOutput move out, Instant deadline)(string?, string?) `doc("Reads a gate's stdout to the end, giving up at the deadline. Reports what the gate printed, or why it could not be read, or neither — which is the deadline, and the caller's cue that the gate is still holding the pipe open. The read runs on a goroutine because a read on a pipe cannot be interrupted: bounding it means being somewhere else when it does not return. The pipe goes with the goroutine, so a drain that is abandoned still owns everything it holds.") {
-  // Capacity 1 on both: a drain nobody is listening to any more must still be
+_drain_within(os.ProcessOutput move out, Instant deadline)(string?, string?, string?) `doc("Reads a gate's stdout to the end, giving up at the deadline. Reports what the gate printed, or why it could not be read, or what a gate that printed past the runner's bound began with, or none of the three — which is the deadline, and the caller's cue that the gate is still holding the pipe open. The read runs on a goroutine because a read on a pipe cannot be interrupted: bounding it means being somewhere else when it does not return. The pipe goes with the goroutine, so a drain that is abandoned still owns everything it holds. Stopping the gate is the caller's in every one of these: this reads, and what becomes of the gate is what the caller does about what it read.") {
+  // Capacity 1 on each: a drain nobody is listening to any more must still be
   // able to hand over what it read and exit. An unbuffered send would park it
   // forever on a receiver that is not coming back.
   channel[string] read = channel[string](capacity: 1);
   channel[string] unreadable = channel[string](capacity: 1);
-  go _read_into(move out, read, unreadable);
+  channel[string] too_much = channel[string](capacity: 1);
+  go _read_into(move out, read, unreadable, too_much);
 
   string? text = none;
   string? failure = none;
+  string? began = none;
   while true {
     select {
       t := <-read:
         text = t;
       m := <-unreadable:
         failure = m;
+      p := <-too_much:
+        began = p;
       default:
     }
-    if (text is present) || (failure is present) || Instant.now() >= deadline {
+    if (text is present) || (failure is present) || (began is present) || Instant.now() >= deadline {
       break;
     }
     sleep(_poll_interval);
   }
-  return (text, failure);
+  return (text, failure, began);
 }
 
-_read_into(os.ProcessOutput move pipe, channel[string] read, channel[string] unreadable) `doc("Drains one gate's stdout and reports it, or reports why it could not be read. This is the body _drain_within abandons when the deadline lands first, which is why it owns the pipe rather than borrowing one that would outlive its owner.") {
-  string printed = _read_all(pipe) ? e {
+_read_into(os.ProcessOutput move pipe, channel[string] read, channel[string] unreadable, channel[string] too_much) `doc("Drains one gate's stdout and reports it, reports why it could not be read, or reports that the gate printed more than the runner holds and what it began with. This is the body _drain_within abandons when the deadline lands first, which is why it owns the pipe rather than borrowing one that would outlive its owner — and why returning here is what closes the read end, which is half of stopping a gate that printed too much and the reason this reports the cap rather than reading on to EOF.") {
+  (printed, capped) := _read_all(pipe, _stdout_cap) ? e {
     unreadable.send(e.message.clone());
     return;
   };
+  if capped {
+    // The rest stops being worth holding here rather than at the caller: what
+    // survives a gate that printed too much is a prefix, and everything past it
+    // is carried no further than the line that cuts it off.
+    too_much.send(_head(printed));
+    return;
+  }
   read.send(move printed);
+}
+
+_head(string text) string `doc("The prefix of what a gate printed that the runner keeps to say what it was printing. The head and not the tail, which is the one thing about it this file decides: what a reader needs is where the condition started, and a cap that keeps the most recent bytes discards exactly that (docs/org/engineering-guide.md, \"Everything a program writes has a ceiling\"). Shorter text is kept whole rather than padded: this is a bound, not a width.") {
+  if text.len <= _kept_prefix {
+    return text.clone();
+  }
+  return text[0:_kept_prefix];
 }
 
 _exit_within!(os.Process ~child, Instant deadline) int? `doc("Waits for a gate to exit, giving up at the deadline. Reports the exit code, or nothing when the deadline came first and the gate is still running. Unlike the drain this keeps the child rather than handing it to a goroutine: os.Process.wait blocks without bound, so the exit is noticed by asking whether the process is still alive and the wait is made only once the answer is no — at which point it collects a status rather than waiting for one. What that buys is the caller still holding the child when the deadline lands, and holding it is the whole of what stopping a gate takes: SIGKILL is reachable only through the Process that spawned it, so a wait that had taken the child could ask the gate to stop and never make it.") {
@@ -246,11 +275,19 @@ get _poll_interval Duration `doc("How often the runner looks again at a gate it 
   return Duration.from_millis(5);
 }
 
+get _stdout_cap int `doc("The bound the contract puts on a gate's stdout (docs/gate-contract.md, \"The envelope\"), in bytes: one MiB, and what it means and why it is that number are stated there. It is named at one boundary rather than written at the read that enforces it, the way a timeout is, so that the number the runner holds to can be found, cited and reached by a test without reading the loop.") {
+  return 1048576;
+}
+
+get _kept_prefix int `doc("How much of an over-talkative gate's stdout survives into what the runner reports, in bytes. That a bounded prefix survives at all is the contract's (docs/gate-contract.md, \"The envelope\"); the size is this runner's, and it is chosen to sit well inside the bound one log line is held to (docs/org/logging.md, \"The line\") — a diagnostic that has to be cut again by whatever records it was not a bound, only a smaller unbounded one.") {
+  return 1024;
+}
+
 _overran(string gate, Duration timeout) string `doc("What the runner says about a gate it stopped for running too long. One spelling, because the read and the wait are two places a deadline can land and one fact about the gate: it overran, and it was stopped. What it does not say is how, because that is the runner's business rather than the reader's — a reader acts on the deadline, not on the signal that enforced it.") {
   return "gate '" + gate + "' exceeded its declared timeout of " + timeout.to_string();
 }
 
-_read_all!(os.ProcessOutput ~pipe) string `doc("Drains a pipe to a string. A gate's envelope is one JSON object and is read whole rather than streamed.") {
+_read_all!(os.ProcessOutput ~pipe, int cap)(string, bool) `doc("Drains a pipe to a string, stopping once the gate has printed more than the cap allows the runner to hold. Reports what it read and whether the cap is what stopped it, rather than EOF. A gate's envelope is one JSON object and is read whole rather than streamed, so the cap is on the whole of it. One byte past the cap is read deliberately: a gate that printed exactly the cap printed something that can still be an envelope, and the byte after it is the only thing that tells the two apart. The cap arrives as a parameter rather than being read here, so that the one boundary it is declared at stays the one place it is decided — and so a test can reach this bound at a size a test can print.") {
   Builder collected = Builder();
   u8[] buf = u8[]();
   int i = 0;
@@ -263,13 +300,24 @@ _read_all!(os.ProcessOutput ~pipe) string `doc("Drains a pipe to a string. A gat
     if n <= 0 {
       break;
     }
+    // What is left of the cap, plus the byte that proves it was passed. The
+    // builder's own length is the count: a second counter beside it would be
+    // one more thing to keep in step with the bytes actually held.
+    int room = (cap + 1) - collected.len;
+    int take = n;
+    if take > room {
+      take = room;
+    }
     u8[] chunk = u8[]();
     int j = 0;
-    while j < n {
+    while j < take {
       chunk.push(buf[j]);
       j = j + 1;
     }
     collected.write_string(string.from_bytes(chunk));
+    if collected.len > cap {
+      return (collected.to_string(), true);
+    }
   }
-  return collected.to_string();
+  return (collected.to_string(), false);
 }
