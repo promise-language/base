@@ -1,8 +1,40 @@
+use io;
+
+use os;
+
 _spec(string move command) GateSpec {
+  return _spec_lasting(move command, Duration.from_secs(60));
+}
+
+_spec_lasting(string move command, Duration timeout) GateSpec {
   VcsTransition[] b = VcsTransition[]();
   b.push(VcsTransition.Commit);
   return GateSpec.of("probe", OsCommand.of(move command), none, HostOs[](), none, HostArch[](),
-                     Duration.from_secs(60), move b, none, Exclusion[](), string[](), MetricSpec[]());
+                     timeout, move b, none, Exclusion[](), string[](), MetricSpec[]());
+}
+
+_printing_an_envelope(Duration timeout) GateSpec {
+  return _spec_lasting("/bin/echo " + "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\"test_count\":\{\"type\":\"Int\",\"value\":17703\}\},\"groups\":[]\}", timeout);
+}
+
+get _closes_stdout string => "gate-closes-stdout.sh";
+
+_a_gate_that_closes_its_stdout() string {
+  // A gate that stops talking and keeps running is not a stock program, and the
+  // exec line cannot spell one: it splits on whitespace and supports no quoting,
+  // so a shell fragment cannot be written into it. The contract's own answer is
+  // the one taken here — a gate needing shell features is a script the line
+  // names (docs/gate-contract.md, "The exec line").
+  //
+  // It prints one line before closing, so a drain that returned early is
+  // distinguishable from one that read everything the gate had to say.
+  //
+  // The directory is returned rather than the path because it is what run_gate
+  // is handed: a working directory reaches the child whole, while a temp path
+  // written into an exec line would be split on any space it happened to carry.
+  string dir = os.temp_dir;
+  io.File.write_content(dir + "/" + _closes_stdout, "echo ready\nexec 1>&-\nsleep 30\n")?!;
+  return dir;
 }
 
 an_exec_line_splits_into_program_and_arguments() `test {
@@ -23,7 +55,7 @@ a_run_reports_which_gate_it_was() `test {
 }
 
 a_gate_that_prints_an_envelope_is_read() `test {
-  GateSpec g = _spec("/bin/echo " + "\{\"schema_version\":1,\"target\":\"linux/amd64\",\"metrics\":\{\"test_count\":\{\"type\":\"Int\",\"value\":17703\}\},\"groups\":[]\}");
+  GateSpec g = _printing_an_envelope(Duration.from_secs(60));
   GateRun r = run_gate(g, HostOs.Linux, none)?!;
   GateOutput? printed = r.output();
   assert(printed is present, msg: "the envelope came back");
@@ -58,6 +90,166 @@ output_that_is_not_an_envelope_is_refused() `test {
     GateRun.of("probe", 0, none);
   };
   assert(right_reason, msg: "a gate printing something else is a contract breach, not a verdict");
+}
+
+a_gate_that_never_ends_is_killed_at_its_timeout() `test {
+  // /bin/cat blocks on a stdin nobody writes to: it prints nothing, holds its
+  // stdout open and never exits, so the drain and the wait are both on it and
+  // only the deadline ends either. A runner that did not enforce the timeout
+  // would hang here rather than fail here.
+  GateSpec g = _spec_lasting("/bin/cat", Duration.from_millis(200));
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
+    right_reason = e.message.contains("probe") && e.message.contains("exceeded its declared timeout");
+    GateRun.of("probe", 0, none);
+  };
+  assert(right_reason, msg: "a gate that outlasts its timeout is stopped and named, not waited on");
+}
+
+a_gate_that_would_finish_late_is_stopped_when_its_time_runs_out() `test {
+  // Three seconds of work against a fifth of a second of budget. The clock is
+  // the assertion that matters: a runner that let the gate finish would report
+  // the very same error three seconds later, which is the defect, not the fix.
+  GateSpec g = _spec_lasting("/bin/sleep 3", Duration.from_millis(200));
+  Instant started = Instant.now();
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, none) ? e {
+    right_reason = e.message.contains("exceeded its declared timeout");
+    GateRun.of("probe", 0, none);
+  };
+  Duration took = started.elapsed();
+  assert(right_reason, msg: "the gate was stopped for running too long");
+  assert(took < Duration.from_secs(2), msg: "and stopped near its deadline rather than running to completion");
+}
+
+a_wait_that_outlasts_the_deadline_gives_up_on_the_gate() `test {
+  // The deadline has to bound the wait as well as the read, and the case where
+  // only the wait is left is a gate that has closed its stdout and not exited.
+  // No stock program does that, so the wait is reached directly here — through
+  // the same function a run reaches it through, not a second copy of it.
+  string[] args = string[]();
+  args.push("3".clone());
+  os.Process child = os.Process.spawn("/bin/sleep", args, none, none, new_process_group: true)?!;
+  Instant started = Instant.now();
+  int? code = _exit_within(child, Instant.now() + Duration.from_millis(200))?!;
+  Duration took = started.elapsed();
+  assert(!(code is present), msg: "a wait that runs out of time reports no exit code");
+  assert(took < Duration.from_secs(2), msg: "and gives up at its deadline rather than waiting the process out");
+  // The child is still the caller's, which is the point of giving up this way
+  // rather than handing it to a wait that cannot let go of it.
+  _stop(child);
+  assert(!child.is_alive, msg: "and leaves the gate where the runner can still stop it");
+}
+
+a_gate_that_closes_its_stdout_and_keeps_running_is_stopped_at_its_timeout() `test {
+  // The wait half of the deadline reached through run_gate, rather than through
+  // the helper run_gate calls. It is the only run shape that gets there: the
+  // drain ends on EOF, so a gate that closes its stdout satisfies it while still
+  // running, and everything left of the budget is spent on the wait. Without
+  // this, run_gate could stop bounding its wait altogether — go back to a bare
+  // child.wait() — and every other test here would still pass.
+  string dir = _a_gate_that_closes_its_stdout();
+  GateSpec g = _spec_lasting("/bin/sh " + _closes_stdout, Duration.from_millis(200));
+  Instant started = Instant.now();
+  bool right_reason = false;
+  GateRun r = run_gate(g, HostOs.Linux, move dir) ? e {
+    right_reason = e.message.contains("probe") && e.message.contains("exceeded its declared timeout");
+    GateRun.of("probe", 0, none);
+  };
+  Duration took = started.elapsed();
+  assert(right_reason, msg: "a gate that stops talking and keeps running still overruns its budget");
+  assert(took < Duration.from_secs(2), msg: "and is stopped at the deadline rather than waited out");
+}
+
+a_drain_ends_at_eof_rather_than_at_the_gate_s_exit() `test {
+  // What makes two deadline sites necessary rather than one, and the premise the
+  // test above rests on: the drain is satisfied by the last writer closing the
+  // pipe, which a gate can do without ending. A runner that read stdout and
+  // waited as one step would have nothing to bound separately, and this gate
+  // would be indistinguishable from one that had finished.
+  string dir = _a_gate_that_closes_its_stdout();
+  string[] args = string[]();
+  args.push(_closes_stdout);
+  os.Process child = os.Process.spawn("/bin/sh", args, none, move dir, new_process_group: true)?!;
+  os.ProcessOutput out = child.take_stdout()?!;
+  (printed, unreadable) := _drain_within(move out, Instant.now() + Duration.from_secs(5));
+  assert(printed is present, msg: "the drain ends when the gate closes its stdout");
+  assert(printed!.trim() == "ready", msg: "having read everything the gate said, not having given up early");
+  assert(!(unreadable is present), msg: "and an orderly close is not a read that failed");
+  assert(child.is_alive, msg: "and the gate that closed it is still running");
+  _stop(child);
+}
+
+a_stop_takes_the_gate_s_descendants_with_it() `test {
+  // A gate's work is its process tree, not its leader, and this gate exits at
+  // once leaving a child behind holding the stdout the drain is on — which is
+  // the hang the timeout exists to end. A stop that reached only the leader
+  // would report a timeout and leave the work running. Which of _stop's two
+  // signals gets there is deliberately not asserted: that is the runner's
+  // business, and pinning it here would fix an implementation rather than a
+  // behaviour.
+  //
+  // EOF is the signal, not a delay. The drain below returns as soon as the last
+  // writer is gone, so its deadline bounds how long the failure takes to report
+  // and nothing waits on it when the stop worked.
+  string[] args = string[]();
+  args.push("-c".clone());
+  args.push("sleep 30 & exit".clone());
+  os.Process child = os.Process.spawn("/bin/sh", args, none, none, new_process_group: true)?!;
+  os.ProcessOutput out = child.take_stdout()?!;
+  _stop(child);
+  (printed, unreadable) := _drain_within(move out, Instant.now() + Duration.from_secs(5));
+  assert(printed is present, msg: "a stopped gate's descendants are stopped with it, so its stdout reaches EOF");
+  assert(!(unreadable is present), msg: "and the pipe closes rather than failing");
+}
+
+a_gate_that_has_already_finished_is_reported_past_its_deadline() `test {
+  // The order the wait asks its two questions in. A gate that ended measured
+  // whatever it measured, whether or not the clock ran out while it was ending,
+  // so the exit is looked for before the deadline is. Stopping the gate first is
+  // what makes "already finished" a fact here rather than a race on one.
+  string[] args = string[]();
+  os.Process child = os.Process.spawn("/bin/cat", args, none, none, new_process_group: true)?!;
+  _stop(child);
+  int? code = _exit_within(child, Instant.now() - Duration.from_secs(1))?!;
+  assert(code is present, msg: "a gate that has already finished is reported rather than timed out");
+}
+
+a_wait_that_finishes_inside_the_deadline_reports_the_code() `test {
+  // The same wait on a gate that ends in time: it must report the kernel's code
+  // rather than the deadline's silence, and must not sit out the budget waiting
+  // to be sure. /usr/bin/false is chosen over true so a code of zero cannot be
+  // an uninitialised value passing for an answer.
+  string[] args = string[]();
+  os.Process child = os.Process.spawn("/usr/bin/false", args, none, none, new_process_group: true)?!;
+  Instant started = Instant.now();
+  int? code = _exit_within(child, Instant.now() + Duration.from_secs(30))?!;
+  Duration took = started.elapsed();
+  assert(code is present, msg: "a gate that exits in time reports an exit code");
+  assert(code! == 1, msg: "and it is the code the kernel gave it");
+  assert(took < Duration.from_secs(2), msg: "and the wait ends with the gate, not with the deadline");
+}
+
+a_stopped_gate_is_dead_and_reaped() `test {
+  // What both deadline paths end at, asserted on its own: stopping is the thing
+  // the timeout exists to do, and a run that reported a timeout while leaving
+  // the gate running would satisfy every other test here. /bin/cat never exits
+  // on its own, so its death is the stop's doing and nothing else's.
+  string[] args = string[]();
+  os.Process child = os.Process.spawn("/bin/cat", args, none, none, new_process_group: true)?!;
+  assert(child.is_alive, msg: "the gate is running before it is stopped");
+  _stop(child);
+  assert(!child.is_alive, msg: "a stopped gate is not still running");
+}
+
+a_gate_that_finishes_inside_its_timeout_is_left_alone() `test {
+  // The other side of the deadline: a short budget a gate comfortably meets is
+  // not a reason to stop it, and the envelope still arrives.
+  GateSpec g = _printing_an_envelope(Duration.from_secs(2));
+  GateRun r = run_gate(g, HostOs.Linux, none)?!;
+  GateOutput? printed = r.output();
+  assert(printed is present, msg: "a gate inside its budget is read rather than stopped");
+  assert(r.exit_code == 0, msg: "and the exit code is the one the kernel gave it");
 }
 
 a_gate_with_no_command_for_this_host_is_refused() `test {
