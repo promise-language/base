@@ -52,6 +52,26 @@ bool_metrics_stay_bools() `test {
   assert(is_bool, msg: "and came back a bool rather than a number: " + s);
 }
 
+a_bool_measurement_carrying_a_number_is_refused() `test {
+  // The encoding this member exists to end, printed by a gate that tagged it
+  // Bool anyway. Read permissively, a 1 arrives as a yes nobody measured — and
+  // the envelope is decoded before anything compares it to what the manifest
+  // declared, so this is the boundary where it is still a number.
+  string printed = "\{\"schema_version\":1,\"target\":\"wasm32\",\"metrics\":\{\"builds_for_target\":\{\"type\":\"Bool\",\"value\":1\}\},\"groups\":[],\"incomplete_reason\":null\}";
+  bool refused = false;
+  GateOutput back = json.decode_string[GateOutput](move printed) ? e {
+    refused = true;
+    GateOutput.of("wasm32", map[string, MetricValue]());
+  };
+  assert(refused, msg: "a measurement tagged Bool and written as a number is refused, not read as true");
+
+  // The same envelope with the yes written as one, so what the refusal above
+  // rests on is the 1 rather than anything else in the shape.
+  string honest = "\{\"schema_version\":1,\"target\":\"wasm32\",\"metrics\":\{\"builds_for_target\":\{\"type\":\"Bool\",\"value\":true\}\},\"groups\":[],\"incomplete_reason\":null\}";
+  GateOutput read = json.decode_string[GateOutput](move honest)?!;
+  assert(read.target == "wasm32", msg: "and the envelope it was refused from is one this reader otherwise accepts");
+}
+
 a_bool_measurement_renders_as_a_yes_or_a_no() `test {
   MetricValue no = MetricValue.Bool(false);
   string text = no.to_string();
